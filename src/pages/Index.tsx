@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { CameraCapture } from "@/components/CameraCapture";
 import { ImageUpload } from "@/components/ImageUpload";
 import { WineResults } from "@/components/WineResults";
+import { WineEnrichment } from "@/components/WineEnrichment";
 import { recognizeWineByFile, type RecognitionResult } from "@/lib/wine-api";
 import heroBg from "@/assets/hero-bg.jpg";
 
@@ -24,7 +25,7 @@ const Index = () => {
     setResult(null);
 
     try {
-      const res = await recognizeWineByFile(file, 5, false);
+      const res = await recognizeWineByFile(file, 5, false, true);
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Recognition failed");
@@ -147,6 +148,9 @@ const Index = () => {
               candidates={result.top_candidates}
               requestId={result.request_id}
             />
+            {result.enrichment && (
+              <WineEnrichment enrichment={result.enrichment} />
+            )}
             <Button
               onClick={reset}
               variant="secondary"
