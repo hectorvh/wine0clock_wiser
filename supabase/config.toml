@@ -1,1 +1,4 @@
 project_id = "nayrdinavihfffucctvt"
+
+[functions.recognize-wine]
+verify_jwt = false
