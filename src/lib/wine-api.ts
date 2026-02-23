@@ -1,106 +1,84 @@
 import { supabase } from "@/integrations/supabase/client";
 
-export interface WineCandidate {
-  label: string;
-  confidence: number;
+// ── Analysis mode ─────────────────────────────────────────────────────
+
+export type AnalysisMode = "analyzer" | "recognition_explorer";
+
+const STORAGE_KEY = "wine_analysis_mode";
+
+export function getStoredMode(): AnalysisMode {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === "analyzer" || stored === "recognition_explorer") return stored;
+  } catch {}
+  return "analyzer";
 }
 
-export interface EnrichmentResult {
-  enrichment_status: "matched" | "no_match" | "skipped" | "error";
-  explorer?: {
-    search_candidates: Array<{ _id: string; name: string }>;
-    selected?: { _id: string; name: string; score: number };
-    info?: {
-      _id?: string;
-      name?: string;
-      winery?: { name?: string; region?: string };
-      statistics?: Record<string, unknown>;
-      vintages?: Array<{ year?: number; [key: string]: unknown }>;
-      seo_name?: string;
-      region?: string;
-      characteristics?: Record<string, unknown>;
-      [key: string]: unknown;
-    };
+export function setStoredMode(mode: AnalysisMode): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, mode);
+  } catch {}
+}
+
+// ── Normalized response shape ─────────────────────────────────────────
+
+export interface NormalizedWineResult {
+  mode: AnalysisMode;
+  wine: {
+    full_name: string | null;
+    producer: string | null;
+    winery: string | null;
+    winery_description: string | null;
+    region_name: string | null;
+    country: string | null;
+    wine_type: string | null;
+    vintage: string | null;
+    grape_variety: string | null;
+    average_price_usd: number | null;
   };
-  error_reason?: string;
+  sensory: {
+    aroma: string | null;
+    tasting_notes: string | null;
+    food_pairing: string | null;
+  };
+  serving: {
+    temp_min_c: number | null;
+    temp_max_c: number | null;
+    decanting_minutes: number | null;
+  };
+  ratings: {
+    avg_rating: number | null;
+    reviews: number | null;
+    source: string | null;
+  };
+  debug: {
+    confidence: number | null;
+    selected_id: string | null;
+    errors: string[];
+    raw?: unknown;
+  };
 }
 
-export interface RecognitionResult {
-  request_id: string;
-  top_candidates: WineCandidate[];
-  raw_response?: unknown;
-  enrichment?: EnrichmentResult;
-}
+// ── API calls ─────────────────────────────────────────────────────────
 
-export async function recognizeWineByFile(
+export async function analyzeWine(
   file: File,
-  topK: number = 5,
-  includeRaw: boolean = false,
-  enrich: boolean = true,
-): Promise<RecognitionResult> {
+  mode: AnalysisMode = "analyzer",
+  lang: string = "en",
+): Promise<NormalizedWineResult> {
   const formData = new FormData();
   formData.append("file", file);
 
   const params = new URLSearchParams();
-  params.set("top_k", String(topK));
-  if (includeRaw) params.set("include_raw", "true");
-  if (enrich) params.set("enrich", "true");
+  params.set("mode", mode);
+  params.set("lang", lang);
 
   const { data, error } = await supabase.functions.invoke(
     `recognize-wine?${params.toString()}`,
     { body: formData },
   );
 
-  if (error) throw new Error(error.message || "Recognition failed");
+  if (error) throw new Error(error.message || "Analysis failed");
   if (data?.error) throw new Error(data.error);
-  return data as RecognitionResult;
-}
-
-export async function recognizeWineByUrl(
-  url: string,
-  topK: number = 5,
-  includeRaw: boolean = false,
-  enrich: boolean = true,
-): Promise<RecognitionResult> {
-  const params = new URLSearchParams();
-  params.set("top_k", String(topK));
-  if (includeRaw) params.set("include_raw", "true");
-  if (enrich) params.set("enrich", "true");
-
-  const { data, error } = await supabase.functions.invoke(
-    `recognize-wine?${params.toString()}`,
-    { body: { url } },
-  );
-
-  if (error) throw new Error(error.message || "Recognition failed");
-  if (data?.error) throw new Error(data.error);
-  return data as RecognitionResult;
-}
-
-export async function searchWineExplorer(wineName: string) {
-  const params = new URLSearchParams({ wine_name: wineName });
-  const { data, error } = await supabase.functions.invoke(
-    `wine-explorer?action=search&${params.toString()}`,
-    { method: "GET" as any },
-  );
-  if (error) throw new Error(error.message);
-  return data;
-}
-
-export async function getWineExplorerInfo(id: string) {
-  const params = new URLSearchParams({ _id: id });
-  const { data, error } = await supabase.functions.invoke(
-    `wine-explorer?action=info&${params.toString()}`,
-    { method: "GET" as any },
-  );
-  if (error) throw new Error(error.message);
-  return data;
-}
-
-export async function enrichWine(wineName: string, producer?: string, vintage?: number) {
-  const { data, error } = await supabase.functions.invoke("wine-explorer", {
-    body: { wine_name: wineName, producer, vintage },
-  });
-  if (error) throw new Error(error.message);
-  return data as EnrichmentResult;
+  return data as NormalizedWineResult;
 }

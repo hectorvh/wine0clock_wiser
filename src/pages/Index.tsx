@@ -3,42 +3,57 @@ import { Camera, Upload, Wine, Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CameraCapture } from "@/components/CameraCapture";
 import { ImageUpload } from "@/components/ImageUpload";
-import { WineResults } from "@/components/WineResults";
-import { WineEnrichment } from "@/components/WineEnrichment";
-import { recognizeWineByFile, type RecognitionResult } from "@/lib/wine-api";
+import { UnifiedWineResults } from "@/components/UnifiedWineResults";
+import { AnalysisModeToggle } from "@/components/AnalysisModeToggle";
+import {
+  analyzeWine,
+  getStoredMode,
+  setStoredMode,
+  type AnalysisMode,
+  type NormalizedWineResult,
+} from "@/lib/wine-api";
 import heroBg from "@/assets/hero-bg.jpg";
 
-type Mode = "idle" | "camera" | "upload";
+type UIMode = "idle" | "camera" | "upload";
 
 const Index = () => {
-  const [mode, setMode] = useState<Mode>("idle");
+  const [uiMode, setUiMode] = useState<UIMode>("idle");
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>(getStoredMode);
   const [preview, setPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<RecognitionResult | null>(null);
+  const [result, setResult] = useState<NormalizedWineResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const processFile = useCallback(async (file: File) => {
-    setPreview(URL.createObjectURL(file));
-    setMode("idle");
-    setLoading(true);
-    setError(null);
-    setResult(null);
+  const handleModeChange = (mode: AnalysisMode) => {
+    setAnalysisMode(mode);
+    setStoredMode(mode);
+  };
 
-    try {
-      const res = await recognizeWineByFile(file, 5, false, true);
-      setResult(res);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Recognition failed");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const processFile = useCallback(
+    async (file: File) => {
+      setPreview(URL.createObjectURL(file));
+      setUiMode("idle");
+      setLoading(true);
+      setError(null);
+      setResult(null);
+
+      try {
+        const res = await analyzeWine(file, analysisMode);
+        setResult(res);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Analysis failed");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [analysisMode],
+  );
 
   const reset = () => {
     setPreview(null);
     setResult(null);
     setError(null);
-    setMode("idle");
+    setUiMode("idle");
   };
 
   return (
@@ -66,11 +81,16 @@ const Index = () => {
 
       {/* Main Content */}
       <div className="fixed bottom-0 left-0 right-0 z-50 max-w-lg mx-auto px-6 pb-8 space-y-4">
-        {/* Action Buttons (when idle and no preview) */}
-        {mode === "idle" && !preview && !loading && (
+        {/* Analysis Mode Toggle */}
+        {uiMode === "idle" && !loading && (
+          <AnalysisModeToggle mode={analysisMode} onChange={handleModeChange} />
+        )}
+
+        {/* Action Buttons */}
+        {uiMode === "idle" && !preview && !loading && (
           <div className="grid grid-cols-2 gap-3">
             <Button
-              onClick={() => setMode("camera")}
+              onClick={() => setUiMode("camera")}
               className="h-14 text-base gap-2 glow-primary"
               size="lg"
             >
@@ -78,7 +98,7 @@ const Index = () => {
               Take Photo
             </Button>
             <Button
-              onClick={() => setMode("upload")}
+              onClick={() => setUiMode("upload")}
               variant="secondary"
               className="h-14 text-base gap-2"
               size="lg"
@@ -90,21 +110,21 @@ const Index = () => {
         )}
 
         {/* Camera Mode */}
-        {mode === "camera" && (
+        {uiMode === "camera" && (
           <CameraCapture
             onCapture={processFile}
-            onClose={() => setMode("idle")}
+            onClose={() => setUiMode("idle")}
           />
         )}
 
         {/* Upload Mode */}
-        {mode === "upload" && (
+        {uiMode === "upload" && (
           <div className="space-y-3">
             <ImageUpload onFileSelected={processFile} />
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setMode("idle")}
+              onClick={() => setUiMode("idle")}
               className="w-full text-muted-foreground"
             >
               Cancel
@@ -127,7 +147,9 @@ const Index = () => {
         {loading && (
           <div className="glass-card rounded-xl p-8 flex flex-col items-center gap-3">
             <Loader2 className="h-8 w-8 text-primary animate-spin" />
-            <p className="text-sm text-muted-foreground">Analyzing wine label…</p>
+            <p className="text-sm text-muted-foreground">
+              {analysisMode === "analyzer" ? "Analyzing wine label…" : "Recognizing wine…"}
+            </p>
           </div>
         )}
 
@@ -144,18 +166,8 @@ const Index = () => {
         {/* Results */}
         {result && (
           <>
-            <WineResults
-              candidates={result.top_candidates}
-              requestId={result.request_id}
-            />
-            {result.enrichment && (
-              <WineEnrichment enrichment={result.enrichment} />
-            )}
-            <Button
-              onClick={reset}
-              variant="secondary"
-              className="w-full"
-            >
+            <UnifiedWineResults result={result} />
+            <Button onClick={reset} variant="secondary" className="w-full">
               <RotateCcw className="h-4 w-4 mr-2" /> Scan Another
             </Button>
           </>
