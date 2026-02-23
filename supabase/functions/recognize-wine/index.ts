@@ -10,68 +10,95 @@ const RAPIDAPI_HOST = "wine-recognition2.p.rapidapi.com";
 const RAPIDAPI_URL = `https://${RAPIDAPI_HOST}/v1/results`;
 const EXPLORER_HOST = "wine-explorer-api-ratings-insights-and-search.p.rapidapi.com";
 const EXPLORER_BASE = `https://${EXPLORER_HOST}`;
+const ANALYZER_HOST = "wine-analyzer.p.rapidapi.com";
+const ANALYZER_BASE = `https://${ANALYZER_HOST}`;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ALLOWED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 
-// ── Types ──────────────────────────────────────────────────────────────
+type AnalysisMode = "analyzer" | "recognition_explorer";
 
-interface WineCandidate {
-  label: string;
-  confidence: number;
-}
+// ── Normalized response (shared between both pipelines) ───────────────
 
-interface EnrichmentResult {
-  enrichment_status: "matched" | "no_match" | "skipped" | "error";
-  explorer?: {
-    search_candidates: Array<{ _id: string; name: string }>;
-    selected?: { _id: string; name: string; score: number };
-    info?: Record<string, unknown>;
+interface NormalizedResponse {
+  mode: AnalysisMode;
+  wine: {
+    full_name: string | null;
+    producer: string | null;
+    winery: string | null;
+    winery_description: string | null;
+    region_name: string | null;
+    country: string | null;
+    wine_type: string | null;
+    vintage: string | null;
+    grape_variety: string | null;
+    average_price_usd: number | null;
   };
-  error_reason?: string;
+  sensory: {
+    aroma: string | null;
+    tasting_notes: string | null;
+    food_pairing: string | null;
+  };
+  serving: {
+    temp_min_c: number | null;
+    temp_max_c: number | null;
+    decanting_minutes: number | null;
+  };
+  ratings: {
+    avg_rating: number | null;
+    reviews: number | null;
+    source: string | null;
+  };
+  debug: {
+    confidence: number | null;
+    selected_id: string | null;
+    errors: string[];
+    raw?: unknown;
+  };
 }
 
-interface RecognitionResponse {
-  request_id: string;
-  top_candidates: WineCandidate[];
-  raw_response?: unknown;
-  enrichment?: EnrichmentResult;
+function emptyResponse(mode: AnalysisMode): NormalizedResponse {
+  return {
+    mode,
+    wine: { full_name: null, producer: null, winery: null, winery_description: null, region_name: null, country: null, wine_type: null, vintage: null, grape_variety: null, average_price_usd: null },
+    sensory: { aroma: null, tasting_notes: null, food_pairing: null },
+    serving: { temp_min_c: null, temp_max_c: null, decanting_minutes: null },
+    ratings: { avg_rating: null, reviews: null, source: null },
+    debug: { confidence: null, selected_id: null, errors: [] },
+  };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-function makeErrorResponse(status: number, message: string): Response {
-  return new Response(JSON.stringify({ error: message }), {
+function makeResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 }
 
-function parseTopK(url: URL): number {
-  const raw = url.searchParams.get("top_k");
-  const topK = raw ? parseInt(raw, 10) : 5;
-  return Math.min(Math.max(topK, 1), 10);
+function makeError(status: number, message: string): Response {
+  return makeResponse({ error: message }, status);
 }
 
-function shouldIncludeRaw(url: URL): boolean {
-  return url.searchParams.get("include_raw") === "true";
+async function fetchWithTimeout(url: string, options: RequestInit, ms = 15000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ms);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeout);
+    return res;
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
 }
 
-function shouldEnrich(url: URL): boolean {
-  return url.searchParams.get("enrich") === "true";
-}
+// ── Pipeline A: Recognition + Explorer ────────────────────────────────
 
-function getMinConfidence(url: URL): number {
-  const raw = url.searchParams.get("min_confidence");
-  return raw ? parseFloat(raw) : 0.6;
-}
-
-// ── Recognition API parsing ────────────────────────────────────────────
-
-function parseCandidates(apiResponse: any): WineCandidate[] {
+function parseCandidates(apiResponse: any): Array<{ label: string; confidence: number }> {
   try {
     const results = apiResponse?.results ?? [];
-    const candidates: WineCandidate[] = [];
-
+    const candidates: Array<{ label: string; confidence: number }> = [];
     for (const result of results) {
       const entities = result?.entities ?? [];
       for (const entity of entities) {
@@ -88,7 +115,6 @@ function parseCandidates(apiResponse: any): WineCandidate[] {
         }
       }
     }
-
     candidates.sort((a, b) => b.confidence - a.confidence);
     return candidates;
   } catch {
@@ -96,50 +122,10 @@ function parseCandidates(apiResponse: any): WineCandidate[] {
   }
 }
 
-async function callRecognitionAPI(
-  body: FormData | string,
-  isUrl: boolean,
-  rapidApiKey: string,
-): Promise<{ apiResponse: any; status: number }> {
-  const headers: Record<string, string> = {
-    "X-RapidAPI-Key": rapidApiKey,
-    "X-RapidAPI-Host": RAPIDAPI_HOST,
-  };
-
-  if (isUrl) {
-    headers["Content-Type"] = "application/json";
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-
-  try {
-    const response = await fetch(RAPIDAPI_URL, {
-      method: "POST",
-      headers,
-      body,
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    const data = await response.json();
-    return { apiResponse: data, status: response.status };
-  } catch (err) {
-    clearTimeout(timeout);
-    if (err instanceof DOMException && err.name === "AbortError") {
-      throw new Error("RapidAPI request timed out");
-    }
-    throw err;
-  }
-}
-
-// ── Enrichment (calls wine-explorer) ───────────────────────────────────
-
 function bigrams(s: string): Set<string> {
   const lower = s.toLowerCase();
   const set = new Set<string>();
-  for (let i = 0; i < lower.length - 1; i++) {
-    set.add(lower.slice(i, i + 2));
-  }
+  for (let i = 0; i < lower.length - 1; i++) set.add(lower.slice(i, i + 2));
   return set;
 }
 
@@ -152,105 +138,195 @@ function diceSimilarity(a: string, b: string): number {
   return (2 * overlap) / (ba.size + bb.size);
 }
 
-async function fetchWithTimeout(url: string, options: RequestInit, ms = 10000): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ms);
-  try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(timeout);
-    return res;
-  } catch (err) {
-    clearTimeout(timeout);
-    throw err;
-  }
-}
+async function pipelineRecognitionExplorer(
+  file: File,
+  rapidApiKey: string,
+  includeRaw: boolean,
+): Promise<NormalizedResponse> {
+  const result = emptyResponse("recognition_explorer");
+  const errors: string[] = [];
 
-async function enrichFromRecognition(
-  wineName: string,
-  apiKey: string,
-): Promise<EnrichmentResult> {
+  // Step A1: Recognition
+  const apiFormData = new FormData();
+  apiFormData.append("image", file);
+
+  let recognitionData: any;
   try {
-    const searchUrl = `${EXPLORER_BASE}/api/wines/search?query=${encodeURIComponent(wineName)}`;
-    const searchRes = await fetchWithTimeout(searchUrl, {
-      method: "GET",
-      headers: {
-        "X-RapidAPI-Key": apiKey,
-        "X-RapidAPI-Host": EXPLORER_HOST,
-      },
+    const res = await fetchWithTimeout(RAPIDAPI_URL, {
+      method: "POST",
+      headers: { "X-RapidAPI-Key": rapidApiKey, "X-RapidAPI-Host": RAPIDAPI_HOST },
+      body: apiFormData,
     });
 
+    if (!res.ok) {
+      if (res.status === 429) {
+        errors.push("Rate limit exceeded on recognition API. Please try again shortly.");
+        result.debug.errors = errors;
+        return result;
+      }
+      errors.push(`Recognition API returned ${res.status}`);
+      result.debug.errors = errors;
+      return result;
+    }
+
+    recognitionData = await res.json();
+  } catch (err) {
+    errors.push(`Recognition failed: ${err instanceof Error ? err.message : "timeout"}`);
+    result.debug.errors = errors;
+    return result;
+  }
+
+  const candidates = parseCandidates(recognitionData);
+  if (candidates.length === 0) {
+    errors.push("No wine labels detected in image");
+    result.debug.errors = errors;
+    if (includeRaw) result.debug.raw = recognitionData;
+    return result;
+  }
+
+  const top = candidates[0];
+  result.wine.full_name = top.label;
+  result.debug.confidence = top.confidence;
+  if (includeRaw) result.debug.raw = recognitionData;
+
+  // Step A2: Wine Explorer enrichment (best-effort)
+  if (top.confidence < 0.3) {
+    errors.push("Confidence too low for enrichment");
+    result.debug.errors = errors;
+    return result;
+  }
+
+  try {
+    const searchUrl = `${EXPLORER_BASE}/api/wines/search?query=${encodeURIComponent(top.label)}`;
+    const searchRes = await fetchWithTimeout(searchUrl, {
+      method: "GET",
+      headers: { "X-RapidAPI-Key": rapidApiKey, "X-RapidAPI-Host": EXPLORER_HOST },
+    }, 10000);
+
     if (!searchRes.ok) {
-      return { enrichment_status: "error", error_reason: `Search returned ${searchRes.status}` };
+      errors.push(`Explorer search returned ${searchRes.status}`);
+      result.debug.errors = errors;
+      return result;
     }
 
     const searchData = await searchRes.json();
-    const candidates: Array<{ _id: string; name: string; [k: string]: unknown }> =
-      Array.isArray(searchData) ? searchData : (searchData?.results ?? searchData?.wines ?? []);
+    const explorerCandidates = Array.isArray(searchData) ? searchData : (searchData?.results ?? searchData?.wines ?? []);
 
-    if (candidates.length === 0) {
-      return { enrichment_status: "no_match", explorer: { search_candidates: [] } };
+    if (explorerCandidates.length === 0) {
+      errors.push("No matches in Wine Explorer database");
+      result.debug.errors = errors;
+      return result;
     }
 
-    // Score candidates
-    const scored = candidates.slice(0, 10).map((c) => ({
+    // Score and pick best
+    const scored = explorerCandidates.slice(0, 10).map((c: any) => ({
       ...c,
-      score: diceSimilarity(wineName, c.name || ""),
-    })).sort((a, b) => b.score - a.score);
+      score: diceSimilarity(top.label, c.name || ""),
+    })).sort((a: any, b: any) => b.score - a.score);
 
     const best = scored[0];
-    const THRESHOLD = 0.3;
-
-    const topCandidates = scored.slice(0, 5).map((c) => ({ _id: c._id, name: c.name }));
-
-    if (!best || best.score < THRESHOLD) {
-      return { enrichment_status: "no_match", explorer: { search_candidates: topCandidates } };
+    if (!best || best.score < 0.3) {
+      errors.push("No close match found in Wine Explorer");
+      result.debug.errors = errors;
+      return result;
     }
 
-    // Get details
+    result.debug.selected_id = best._id;
+
+    // Get info
     try {
       const infoUrl = `${EXPLORER_BASE}/api/wines/${encodeURIComponent(best._id)}`;
       const infoRes = await fetchWithTimeout(infoUrl, {
         method: "GET",
-        headers: {
-          "X-RapidAPI-Key": apiKey,
-          "X-RapidAPI-Host": EXPLORER_HOST,
-        },
-      });
+        headers: { "X-RapidAPI-Key": rapidApiKey, "X-RapidAPI-Host": EXPLORER_HOST },
+      }, 10000);
 
-      if (!infoRes.ok) {
-        return {
-          enrichment_status: "matched",
-          explorer: {
-            search_candidates: topCandidates,
-            selected: { _id: best._id, name: best.name, score: best.score },
-          },
-          error_reason: "Info lookup failed",
-        };
+      if (infoRes.ok) {
+        const info = await infoRes.json();
+        result.wine.winery = info.winery?.name ?? null;
+        result.wine.region_name = info.region ?? info.winery?.region ?? null;
+        result.ratings.source = "wine_explorer";
+
+        const stats = info.statistics ?? {};
+        result.ratings.avg_rating = stats.ratings_average ?? stats.average_rating ?? null;
+        result.ratings.reviews = stats.ratings_count ?? stats.total_ratings ?? null;
+
+        if (info.vintages?.length > 0) {
+          const years = info.vintages.map((v: any) => v.year).filter(Boolean).sort((a: number, b: number) => b - a);
+          if (years.length > 0) result.wine.vintage = String(years[0]);
+        }
+      } else {
+        errors.push("Wine Explorer info lookup failed");
       }
-
-      const info = await infoRes.json();
-      return {
-        enrichment_status: "matched",
-        explorer: {
-          search_candidates: topCandidates,
-          selected: { _id: best._id, name: best.name, score: best.score },
-          info,
-        },
-      };
     } catch {
-      return {
-        enrichment_status: "matched",
-        explorer: {
-          search_candidates: topCandidates,
-          selected: { _id: best._id, name: best.name, score: best.score },
-        },
-        error_reason: "Info lookup timed out",
-      };
+      errors.push("Wine Explorer info timed out");
     }
   } catch (err) {
-    const reason = err instanceof Error ? err.message : "Unknown enrichment error";
-    return { enrichment_status: "error", error_reason: reason };
+    errors.push(`Explorer enrichment failed: ${err instanceof Error ? err.message : "unknown"}`);
   }
+
+  result.debug.errors = errors;
+  return result;
+}
+
+// ── Pipeline B: Wine Analyzer ─────────────────────────────────────────
+
+async function pipelineAnalyzer(
+  file: File,
+  rapidApiKey: string,
+  lang: string,
+  includeRaw: boolean,
+): Promise<NormalizedResponse> {
+  const result = emptyResponse("analyzer");
+
+  const apiForm = new FormData();
+  apiForm.append("files", file, file.name);
+  apiForm.append("lang", lang);
+
+  try {
+    const res = await fetchWithTimeout(`${ANALYZER_BASE}/api/analyze`, {
+      method: "POST",
+      headers: { "X-RapidAPI-Key": rapidApiKey, "X-RapidAPI-Host": ANALYZER_HOST },
+      body: apiForm,
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      if (res.status === 429) {
+        result.debug.errors.push("Rate limit exceeded. Please try again shortly.");
+        return result;
+      }
+      result.debug.errors.push(data?.error || `Wine Analyzer returned ${res.status}`);
+      return result;
+    }
+
+    const r = data?.results?.[0] ?? data ?? {};
+    const temp = r.serving_temperature_celcius_range ?? r.serving_temperature_celsius_range ?? {};
+
+    result.wine.full_name = r.full_wine_name ?? null;
+    result.wine.producer = r.winery ?? null;
+    result.wine.winery = r.winery ?? null;
+    result.wine.winery_description = r.winery_description ?? null;
+    result.wine.region_name = r.region ?? null;
+    result.wine.wine_type = r.wine_type ?? null;
+    result.wine.vintage = r.vintage ?? null;
+    result.wine.grape_variety = r.grape_variety ?? null;
+    result.wine.average_price_usd = r.average_retail_price_usd ?? null;
+    result.sensory.aroma = r.aroma ?? null;
+    result.sensory.tasting_notes = r.tasting_notes ?? null;
+    result.sensory.food_pairing = r.food_pairing ?? null;
+    result.serving.temp_min_c = temp?.min_temp ?? null;
+    result.serving.temp_max_c = temp?.max_temp ?? null;
+    result.serving.decanting_minutes = r.decanting_time_minutes ?? null;
+    result.debug.selected_id = data?.id ?? null;
+
+    if (includeRaw) result.debug.raw = data;
+  } catch (err) {
+    result.debug.errors.push(`Analyzer failed: ${err instanceof Error ? err.message : "timeout"}`);
+  }
+
+  return result;
 }
 
 // ── Main handler ───────────────────────────────────────────────────────
@@ -261,96 +337,37 @@ Deno.serve(async (req) => {
   }
 
   const rapidApiKey = Deno.env.get("RAPIDAPI_KEY");
-  if (!rapidApiKey) {
-    return makeErrorResponse(500, "RapidAPI key not configured");
-  }
+  if (!rapidApiKey) return makeError(500, "RapidAPI key not configured");
 
-  const requestId = crypto.randomUUID();
-  const startTime = Date.now();
+  if (req.method !== "POST") return makeError(405, "POST only");
+
   const url = new URL(req.url);
-  const topK = parseTopK(url);
-  const includeRaw = shouldIncludeRaw(url);
-  const enrich = shouldEnrich(url);
-  const minConfidence = getMinConfidence(url);
+  const mode: AnalysisMode = (url.searchParams.get("mode") as AnalysisMode) || "analyzer";
+  const includeRaw = url.searchParams.get("include_raw") === "true";
+  const lang = url.searchParams.get("lang") ?? "en";
 
-  try {
-    let apiResponse: any;
-    let apiStatus: number;
-    const contentType = req.headers.get("content-type") ?? "";
-
-    if (contentType.includes("multipart/form-data")) {
-      const formData = await req.formData();
-      const file = formData.get("file");
-
-      if (!file || !(file instanceof File)) {
-        return makeErrorResponse(400, "No file provided. Send a file in the 'file' field.");
-      }
-      if (file.size > MAX_FILE_SIZE) {
-        return makeErrorResponse(400, `File too large. Maximum size is 10MB.`);
-      }
-      if (!ALLOWED_TYPES.includes(file.type)) {
-        return makeErrorResponse(400, `Invalid file type '${file.type}'.`);
-      }
-
-      console.log(`[${requestId}] Processing file: ${file.name}, size: ${file.size}`);
-      const apiFormData = new FormData();
-      apiFormData.append("image", file);
-      const result = await callRecognitionAPI(apiFormData, false, rapidApiKey);
-      apiResponse = result.apiResponse;
-      apiStatus = result.status;
-    } else {
-      const body = await req.json();
-      const imageUrl = body?.url;
-
-      if (!imageUrl || typeof imageUrl !== "string") {
-        return makeErrorResponse(400, "No URL provided.");
-      }
-      try { new URL(imageUrl); } catch { return makeErrorResponse(400, "Invalid URL format."); }
-
-      console.log(`[${requestId}] Processing URL: ${imageUrl}`);
-      const result = await callRecognitionAPI(JSON.stringify({ url: imageUrl }), true, rapidApiKey);
-      apiResponse = result.apiResponse;
-      apiStatus = result.status;
-    }
-
-    const elapsed = Date.now() - startTime;
-    console.log(`[${requestId}] Recognition: status ${apiStatus} in ${elapsed}ms`);
-
-    if (apiStatus !== 200) {
-      return makeErrorResponse(502, `Wine recognition service returned status ${apiStatus}`);
-    }
-
-    const allCandidates = parseCandidates(apiResponse);
-    const topCandidates = allCandidates.slice(0, topK);
-
-    const response: RecognitionResponse = {
-      request_id: requestId,
-      top_candidates: topCandidates,
-    };
-
-    if (includeRaw) {
-      response.raw_response = apiResponse;
-    }
-
-    // ── Optional enrichment ──────────────────────────────────────────
-    if (enrich) {
-      const topCandidate = topCandidates[0];
-      if (topCandidate && topCandidate.confidence >= minConfidence) {
-        console.log(`[${requestId}] Enriching: "${topCandidate.label}" (conf: ${topCandidate.confidence})`);
-        response.enrichment = await enrichFromRecognition(topCandidate.label, rapidApiKey);
-      } else {
-        response.enrichment = { enrichment_status: "skipped" };
-      }
-    }
-
-    return new Response(JSON.stringify(response), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  } catch (err) {
-    const elapsed = Date.now() - startTime;
-    console.error(`[${requestId}] Error after ${elapsed}ms:`, err);
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return makeErrorResponse(500, `Recognition failed: ${message}`);
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType.includes("multipart/form-data")) {
+    return makeError(400, "Content-Type must be multipart/form-data");
   }
+
+  const formData = await req.formData();
+  const file = formData.get("file");
+  if (!file || !(file instanceof File)) {
+    return makeError(400, "No file provided. Send a file in the 'file' field.");
+  }
+  if (file.size > MAX_FILE_SIZE) return makeError(400, "File too large. Maximum 10MB.");
+  if (!ALLOWED_TYPES.includes(file.type)) return makeError(400, `Invalid file type '${file.type}'.`);
+
+  console.log(`[recognize-wine] mode=${mode}, file=${file.name}, size=${file.size}`);
+
+  let result: NormalizedResponse;
+
+  if (mode === "recognition_explorer") {
+    result = await pipelineRecognitionExplorer(file, rapidApiKey, includeRaw);
+  } else {
+    result = await pipelineAnalyzer(file, rapidApiKey, lang, includeRaw);
+  }
+
+  return makeResponse(result);
 });
