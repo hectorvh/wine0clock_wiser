@@ -65,7 +65,7 @@ const Index = () => {
       </div>
 
       {/* Main Content */}
-      <div className="max-w-lg mx-auto px-6 pb-16 -mt-4 space-y-6">
+      <div className="fixed bottom-0 left-0 right-0 z-50 max-w-lg mx-auto px-6 pb-8 space-y-4">
         {/* Action Buttons (when idle and no preview) */}
         {mode === "idle" && !preview && !loading && (
           <div className="grid grid-cols-2 gap-3">
