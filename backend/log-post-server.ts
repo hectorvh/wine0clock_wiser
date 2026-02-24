@@ -1,8 +1,8 @@
 /**
  * Dev-only server: receives POST request/response payloads and writes GeoJSON
- * files to backend/post-requests/. Use so logging works regardless of frontend.
+ * files to backend/post-requests/. When the wine analyzer response includes
+ * region_name, fetches wine region geometry from WFS (BKG) and adds it to the file.
  * Body: { endpoint?: string, payload?: { request?, response?, error? } }
- * response.region_geojson = WFS FeatureCollection; geometry (or null) is extracted.
  */
 import * as http from "node:http";
 import * as path from "node:path";
@@ -13,6 +13,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.LOG_POST_PORT) || 3001;
 const POST_REQUESTS_DIR = path.join(__dirname, "post-requests");
 
+// WFS (BKG) wine regions: layer dlm1000:objart_43001_f, veg "1040" = wine
+const WFS_URL = "https://sgx.geodatenzentrum.de/wfs_dlm1000";
+const WFS_LAYER = "dlm1000:objart_43001_f";
+const WFS_TIMEOUT_MS = 15_000;
+
 // Request body sent by the frontend
 interface LogPostBody {
   endpoint?: string;
@@ -22,6 +27,7 @@ interface LogPostBody {
 interface LogPayload {
   request?: unknown;
   response?: {
+    wine?: { region_name?: string | null };
     region_geojson?: {
       type?: string;
       features?: Array<{ geometry?: unknown }>;
@@ -51,16 +57,51 @@ function parseBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-function buildGeoJSON(payload: LogPayload | undefined): GeoJSONOutput {
-  const regionGeo = payload?.response?.region_geojson;
-  const hasFeatures =
-    regionGeo != null &&
-    typeof regionGeo === "object" &&
-    regionGeo.type === "FeatureCollection" &&
-    Array.isArray(regionGeo.features);
-  const features = hasFeatures && regionGeo?.features ? regionGeo.features : [];
-  const geometry =
-    features.length > 0 && features[0].geometry != null ? features[0].geometry : null;
+/**
+ * Fetches wine region features from WFS (BKG). Filters veg === "1040" (wine).
+ * If regionName is provided, filters by properties.nam (exact match).
+ * Returns array of GeoJSON features, or [] on error/timeout.
+ */
+async function fetchWineRegionsFromWFS(regionName?: string | null): Promise<Array<{ geometry?: unknown; properties?: Record<string, unknown> }>> {
+  if (regionName == null || String(regionName).trim() === "") return [];
+  const params = new URLSearchParams({
+    service: "WFS",
+    version: "1.1.0",
+    request: "GetFeature",
+    typename: WFS_LAYER,
+    outputFormat: "application/json",
+  });
+  const url = `${WFS_URL}?${params.toString()}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), WFS_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return [];
+    const geojson = (await res.json()) as { features?: Array<{ properties?: { veg?: string; nam?: string }; geometry?: unknown }> };
+    const features = Array.isArray(geojson?.features) ? geojson.features : [];
+    let filtered = features.filter((f) => f?.properties?.veg === "1040");
+    const name = String(regionName).trim();
+    if (name) filtered = filtered.filter((f) => f?.properties?.nam === name);
+    return filtered;
+  } catch {
+    clearTimeout(timeout);
+    return [];
+  }
+}
+
+function buildGeoJSON(payload: LogPayload | undefined, geometryOverride: unknown | null = null): GeoJSONOutput {
+  let geometry: unknown = geometryOverride;
+  if (geometry === undefined || geometry === null) {
+    const regionGeo = payload?.response?.region_geojson;
+    const hasFeatures =
+      regionGeo != null &&
+      typeof regionGeo === "object" &&
+      regionGeo.type === "FeatureCollection" &&
+      Array.isArray(regionGeo.features);
+    const features = hasFeatures && regionGeo?.features ? regionGeo.features : [];
+    geometry = features.length > 0 && features[0].geometry != null ? features[0].geometry : null;
+  }
 
   return {
     type: "FeatureCollection",
@@ -114,7 +155,11 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   }
 
   const payload = data.payload;
-  const geojson = buildGeoJSON(payload);
+  const regionName = payload?.response?.wine?.region_name ?? null;
+  const wfsFeatures = await fetchWineRegionsFromWFS(regionName);
+  const wfsGeometry =
+    wfsFeatures.length > 0 && wfsFeatures[0].geometry != null ? wfsFeatures[0].geometry : null;
+  const geojson = buildGeoJSON(payload, wfsGeometry);
 
   try {
     fs.mkdirSync(POST_REQUESTS_DIR, { recursive: true });
