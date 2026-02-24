@@ -44,6 +44,7 @@ The app needs these (e.g. in `.env` or your host’s config). Vite uses `VITE_` 
 Optional:
 
 - `VITE_SUPABASE_PROJECT_ID` – project ref, if your app uses it.
+- `VITE_LOG_POST_URL` – URL of the backend log server for saving request/response as GeoJSON (default `http://localhost:3001/log-post`). Run **`npm run log -w backend`** (or `npm run log` from root) so the backend writes to `backend/post-requests/`. Any frontend can use this.
 
 ### Supabase client
 
@@ -99,6 +100,8 @@ interface NormalizedWineResult {
     errors: string[];
     raw?: unknown;
   };
+  /** GeoJSON FeatureCollection for wine region geometry (WFS), when region_name matched. */
+  region_geojson?: { type: "FeatureCollection"; features: unknown[] } | null;
 }
 ```
 
@@ -166,5 +169,6 @@ When your new app is ready to become the default:
 | Add a new frontend | Add folder, env, invoke logic per contract above, add to workspaces, point root scripts to it. |
 | Run backend only | `npm run serve` from root, or `cd backend && supabase functions serve`. |
 | Run a specific frontend | `npm run dev -w <workspace-name>` (e.g. `frontend` or your new app folder name). |
+| Log POST requests as GeoJSON | Run `npm run log` (backend log server on port 3001). Any frontend can POST to `VITE_LOG_POST_URL` (default `http://localhost:3001/log-post`) with `{ endpoint, payload }`; backend writes to `backend/post-requests/*.geojson`. |
 
 The backend lives in `backend/` and does not depend on which frontend folder exists. Only root `package.json` workspaces and scripts need to be updated when you unplug or plug a frontend.

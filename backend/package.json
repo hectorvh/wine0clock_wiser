@@ -2,6 +2,11 @@
   "name": "backend",
   "private": true,
   "scripts": {
-    "serve": "supabase functions serve"
+    "serve": "supabase functions serve",
+    "log": "tsx log-post-server.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3"
   }
 }

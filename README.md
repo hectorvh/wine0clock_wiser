@@ -18,9 +18,11 @@ npm install
 npm run dev
 ```
 
-- **`npm run dev`** – runs the default frontend dev server (port 8080).
+- **`npm run dev`** – starts **both** the frontend (port 8080) and the backend log server (port 3001). Every time **recognize-wine** is triggered in the app, the response is automatically sent to the log server and stored as a GeoJSON file in **`backend/post-requests/`**. If the log server is down, the app shows a console warning and the file is not stored.
+- **`npm run dev:frontend`** – runs only the frontend (no log server; no GeoJSON files).
 - **`npm run build`** – builds the default frontend.
 - **`npm run serve`** – serves Supabase functions locally (requires [Supabase CLI](https://supabase.com/docs/guides/cli)).
+- **`npm run log`** – runs only the backend log server (port 3001). Use if you run the frontend separately and want GeoJSON stored.
 
 Backend commands use **`backend/supabase/`**; run Supabase CLI from **`backend/`**:
 

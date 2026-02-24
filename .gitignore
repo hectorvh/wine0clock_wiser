@@ -29,6 +29,3 @@ frontend/.env.local
 *.njsproj
 *.sln
 *.sw?
-
-post-requests
-frontend/post-requests

@@ -15,7 +15,18 @@ const ANALYZER_BASE = `https://${ANALYZER_HOST}`;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ALLOWED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 
+// WFS wine regions (dlm1000, veg 1040 = wine)
+const WFS_URL = "https://sgx.geodatenzentrum.de/wfs_dlm1000";
+const WFS_LAYER = "dlm1000:objart_43001_f";
+const WFS_TIMEOUT_MS = 15_000;
+
 type AnalysisMode = "analyzer" | "recognition_explorer";
+
+// GeoJSON FeatureCollection for region geometry
+interface GeoJSONFeatureCollection {
+  type: "FeatureCollection";
+  features: Array<{ type: "Feature"; id?: string; geometry: unknown; properties?: Record<string, unknown> }>;
+}
 
 // ── Normalized response (shared between both pipelines) ───────────────
 
@@ -54,7 +65,11 @@ interface NormalizedResponse {
     errors: string[];
     raw?: unknown;
   };
+  /** GeoJSON FeatureCollection for wine region geometry (WFS, veg 1040). Always present; features may be empty. */
+  region_geojson: GeoJSONFeatureCollection;
 }
+
+const EMPTY_GEOJSON: GeoJSONFeatureCollection = { type: "FeatureCollection", features: [] };
 
 function emptyResponse(mode: AnalysisMode): NormalizedResponse {
   return {
@@ -64,6 +79,7 @@ function emptyResponse(mode: AnalysisMode): NormalizedResponse {
     serving: { temp_min_c: null, temp_max_c: null, decanting_minutes: null },
     ratings: { avg_rating: null, reviews: null, source: null },
     debug: { confidence: null, selected_id: null, errors: [] },
+    region_geojson: EMPTY_GEOJSON,
   };
 }
 
@@ -90,6 +106,44 @@ async function fetchWithTimeout(url: string, options: RequestInit, ms = 15000): 
   } catch (err) {
     clearTimeout(timeout);
     throw err;
+  }
+}
+
+// ── WFS wine regions (dlm1000, veg 1040) ─────────────────────────────
+
+/**
+ * Fetches wine region features from WFS. Filters veg === "1040" (wine).
+ * If regionName is provided, filters features where properties.nam matches (case-insensitive, or contains).
+ * Returns a GeoJSON FeatureCollection.
+ */
+async function fetchWineRegionsGeoJSON(regionName: string | null): Promise<GeoJSONFeatureCollection | null> {
+  if (!regionName || !regionName.trim()) return null;
+  const params = new URLSearchParams({
+    service: "WFS",
+    version: "1.1.0",
+    request: "GetFeature",
+    typename: WFS_LAYER,
+    outputFormat: "application/json",
+  });
+  const url = `${WFS_URL}?${params.toString()}`;
+  try {
+    const res = await fetchWithTimeout(url, { method: "GET" }, WFS_TIMEOUT_MS);
+    if (!res.ok) return null;
+    const geojson = await res.json();
+    const features = Array.isArray(geojson?.features) ? geojson.features : [];
+    const wineFeatures = features.filter((f: any) => f?.properties?.veg === "1040");
+    const nameNorm = regionName.trim().toLowerCase();
+    const filtered = nameNorm
+      ? wineFeatures.filter((f: any) => {
+          const nam = f?.properties?.nam;
+          if (nam == null) return false;
+          const n = String(nam).trim().toLowerCase();
+          return n === nameNorm || n.includes(nameNorm) || nameNorm.includes(n);
+        })
+      : wineFeatures;
+    return { type: "FeatureCollection", features: filtered };
+  } catch {
+    return null;
   }
 }
 
@@ -368,6 +422,11 @@ Deno.serve(async (req) => {
   } else {
     result = await pipelineAnalyzer(file, rapidApiKey, lang, includeRaw);
   }
+
+  // Attach WFS GeoJSON for wine region (same format as fetchWineRegions / wfs_test: FeatureCollection with geometry).
+  // Always return a FeatureCollection so GeoJSON files can be generated even when geometry is empty or WFS has no response.
+  const regionGeo = await fetchWineRegionsGeoJSON(result.wine.region_name);
+  result.region_geojson = regionGeo ?? EMPTY_GEOJSON;
 
   return makeResponse(result);
 });

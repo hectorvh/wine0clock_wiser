@@ -57,6 +57,8 @@ export interface NormalizedWineResult {
     errors: string[];
     raw?: unknown;
   };
+  /** GeoJSON FeatureCollection for wine region geometry (WFS), when region_name matched. */
+  region_geojson?: { type: "FeatureCollection"; features: unknown[] } | null;
 }
 
 /** Full response shape for JSON log: all NormalizedWineResult fields guaranteed. */
@@ -103,6 +105,10 @@ function responseForLog(data: unknown): NormalizedWineResult | null {
       errors: Array.isArray(debug.errors) ? (debug.errors as string[]) : [],
       raw: debug.raw,
     },
+    region_geojson:
+      d.region_geojson != null && typeof d.region_geojson === "object" && (d.region_geojson as { type?: string }).type === "FeatureCollection"
+        ? (d.region_geojson as { type: "FeatureCollection"; features: unknown[] })
+        : null,
   };
 }
 
@@ -146,20 +152,25 @@ export const EXAMPLE_WINE_RESULT: NormalizedWineResult = {
 
 // ── API calls ─────────────────────────────────────────────────────────
 
-const DEV_LOG_POST = "/__log-post";
+// Backend log server (npm run log -w backend) writes GeoJSON to backend/post-requests/
+const DEV_LOG_POST_URL =
+  (import.meta.env.VITE_LOG_POST_URL as string) || "http://localhost:3001/log-post";
 const MAX_FILE_BASE64_LOG = 500_000; // only embed file in log if ≤ 500KB
 
 async function logPostInDev(endpoint: string, payload: unknown): Promise<void> {
-  if (import.meta.env.DEV && typeof fetch === "function") {
-    try {
-      await fetch(DEV_LOG_POST, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ endpoint, payload }),
-      });
-    } catch {
-      // ignore (e.g. dev server not running or logger not available)
+  if (!import.meta.env.DEV || typeof fetch !== "function") return;
+  try {
+    const res = await fetch(DEV_LOG_POST_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint, payload }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok || !(result as { ok?: boolean }).ok) {
+      console.warn("[wine-api] GeoJSON log failed: log server returned", res.status, result);
     }
+  } catch (e) {
+    console.warn("[wine-api] GeoJSON not stored: log server unreachable. Start with: npm run log", e);
   }
 }
 
