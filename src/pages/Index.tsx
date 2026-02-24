@@ -9,6 +9,7 @@ import {
   analyzeWine,
   getStoredMode,
   setStoredMode,
+  EXAMPLE_WINE_RESULT,
   type AnalysisMode,
   type NormalizedWineResult,
 } from "@/lib/wine-api";
@@ -71,7 +72,7 @@ const Index = () => {
             <Wine className="h-8 w-8 text-primary" />
           </div>
           <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-gradient-wine mb-3">
-            Sommelier AI
+            Wine O'Clock Wiser
           </h1>
           <p className="text-muted-foreground max-w-md text-lg">
             Snap or upload a wine label and instantly identify the bottle
@@ -88,15 +89,33 @@ const Index = () => {
 
         {/* Action Buttons */}
         {uiMode === "idle" && !preview && !loading && (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Button
+                onClick={() => setUiMode("camera")}
+                className="h-14 text-base gap-2 glow-primary"
+                size="lg"
+              >
+                <Camera className="h-5 w-5" />
+                Take Photo
+              </Button>
+              <Button
+                onClick={() => setUiMode("upload")}
+                variant="secondary"
+                className="h-14 text-base gap-2"
+                size="lg"
+              >
+                <Upload className="h-5 w-5" />
+                Upload
+              </Button>
+            </div>
             <Button
-              onClick={() => setUiMode("camera")}
-              className="h-14 text-base gap-2 glow-primary"
-              size="lg"
+              onClick={() => setResult(EXAMPLE_WINE_RESULT)}
+              variant="ghost"
+              size="sm"
+              className="w-full text-muted-foreground"
             >
-              <Camera className="h-5 w-5" />
-              Take Photo
-            </Button>
+              See example (all features)
             <Button
               onClick={() => setUiMode("upload")}
               variant="secondary"
@@ -105,6 +124,7 @@ const Index = () => {
             >
               <Upload className="h-5 w-5" />
               Upload
+            </Button>
             </Button>
           </div>
         )}
