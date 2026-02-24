@@ -3,8 +3,9 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import fs from "fs";
 
-// Dev-only: store POST request bodies as JSON files under post-requests/
+// Dev-only: store POST request bodies as JSON files under backend/post-requests/
 function postRequestLoggerPlugin() {
+  const backendPostRequests = path.resolve(__dirname, "..", "backend", "post-requests");
   return {
     name: "post-request-logger",
     configureServer(server: { middlewares: { use: (fn: (req: any, res: any, next: () => void) => void) => void } }) {
@@ -22,7 +23,7 @@ function postRequestLoggerPlugin() {
             res.end(JSON.stringify({ error: "Invalid JSON" }));
             return;
           }
-          const dir = path.resolve(process.cwd(), "post-requests");
+          const dir = backendPostRequests;
           fs.mkdirSync(dir, { recursive: true });
           const safeName = (data.endpoint || "post").replace(/[^a-z0-9-_]/gi, "_");
           const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
