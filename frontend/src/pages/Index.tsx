@@ -116,15 +116,6 @@ const Index = () => {
               className="w-full text-muted-foreground"
             >
               See example (all features)
-            <Button
-              onClick={() => setUiMode("upload")}
-              variant="secondary"
-              className="h-14 text-base gap-2"
-              size="lg"
-            >
-              <Upload className="h-5 w-5" />
-              Upload
-            </Button>
             </Button>
           </div>
         )}

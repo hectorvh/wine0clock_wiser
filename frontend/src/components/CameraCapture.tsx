@@ -83,7 +83,7 @@ export function CameraCapture({ onCapture, onClose }: CameraCaptureProps) {
       />
       <canvas ref={canvasRef} className="hidden" />
 
-      <div className="absolute top-3 right-3 flex gap-2">
+      <div className="absolute top-3 right-3 flex gap-2 z-20">
         <Button
           size="icon"
           variant="secondary"
@@ -100,6 +100,7 @@ export function CameraCapture({ onCapture, onClose }: CameraCaptureProps) {
             stopCamera();
             onClose();
           }}
+          aria-label="Cancel and return to main"
         >
           <X className="h-4 w-4" />
         </Button>
@@ -116,9 +117,17 @@ export function CameraCapture({ onCapture, onClose }: CameraCaptureProps) {
       )}
 
       {!streaming && (
-        <div className="absolute inset-0 flex items-center justify-center bg-background/80">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-background/80">
           <Button onClick={startCamera} variant="secondary">
             <Camera className="mr-2 h-4 w-4" /> Start Camera
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => onClose()}
+          >
+            Cancel
           </Button>
         </div>
       )}
