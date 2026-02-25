@@ -1,0 +1,127 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [
+                433711.4683,
+                5500979.0743
+              ],
+              [
+                433583.0575,
+                5501044.4509
+              ],
+              [
+                433112.4921,
+                5501399.8916
+              ],
+              [
+                433316.0361,
+                5501765.2693
+              ],
+              [
+                434558.6223,
+                5501954.5928
+              ],
+              [
+                434573.9035,
+                5500783.8054
+              ],
+              [
+                434517.9615,
+                5500247.4018
+              ],
+              [
+                433889.4457,
+                5499871.2401
+              ],
+              [
+                433459.6011,
+                5499612.2368
+              ],
+              [
+                433289.2086,
+                5499530.6774
+              ],
+              [
+                433095.4018,
+                5499468.6428
+              ],
+              [
+                432426.8691,
+                5499382.7831
+              ],
+              [
+                432510.3662,
+                5500037.8117
+              ],
+              [
+                433912.0864,
+                5500760.1185
+              ],
+              [
+                433711.4683,
+                5500979.0743
+              ]
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "request": {
+          "query": {
+            "mode": "analyzer",
+            "lang": "en"
+          },
+          "file": {
+            "name": "20251214_204721.jpg",
+            "size": 2527466,
+            "type": "image/jpeg"
+          }
+        },
+        "response": {
+          "mode": "analyzer",
+          "wine": {
+            "full_name": "Steitz & Beck Rosé 2024 Edition",
+            "producer": "Weingut Steitz & Beck",
+            "winery": "Weingut Steitz & Beck",
+            "winery_description": "Rheinhessen winery",
+            "region_name": "Rheinhessen",
+            "country": null,
+            "wine_type": "Rosé",
+            "vintage": "2024",
+            "grape_variety": "Pinot Noir",
+            "average_price_usd": 15
+          },
+          "sensory": {
+            "aroma": "Fresh strawberry, citrus",
+            "tasting_notes": "Crisp, fruity, refreshing",
+            "food_pairing": "Salads, seafood"
+          },
+          "serving": {
+            "temp_min_c": 8,
+            "temp_max_c": 10,
+            "decanting_minutes": 0
+          },
+          "ratings": {
+            "avg_rating": null,
+            "reviews": null,
+            "source": null
+          },
+          "debug": {
+            "confidence": null,
+            "selected_id": "B-zivnxPKY",
+            "errors": []
+          },
+          "region_geojson": null
+        },
+        "error": null
+      }
+    }
+  ]
+}
