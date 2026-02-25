@@ -104,8 +104,8 @@
                                                                              "food_pairing":  "Salads, seafood"
                                                                          },
                                                              "serving":  {
-                                                                             "temp_min_c":  8,
-                                                                             "temp_max_c":  10,
+                                                                             "temp_min_c":  6,
+                                                                             "temp_max_c":  8,
                                                                              "decanting_minutes":  0
                                                                          },
                                                              "ratings":  {
@@ -115,7 +115,7 @@
                                                                          },
                                                              "debug":  {
                                                                            "confidence":  null,
-                                                                           "selected_id":  "ZdT25vquYL",
+                                                                           "selected_id":  "F6JSdGUDXb",
                                                                            "errors":  [
 
                                                                                       ]

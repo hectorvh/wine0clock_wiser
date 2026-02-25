@@ -114,6 +114,7 @@ async function fetchWithTimeout(url: string, options: RequestInit, ms = 15000): 
 /**
  * Fetches wine region features from WFS. Filters veg === "1040" (wine).
  * If regionName is provided, filters features where properties.nam matches (case-insensitive, or contains).
+ * Requests srsName=EPSG:4326 so geometry is WGS84 (lon/lat), like ST_AsGeoJSON(ST_Transform(geom, 4326)).
  * Returns a GeoJSON FeatureCollection.
  */
 async function fetchWineRegionsGeoJSON(regionName: string | null): Promise<GeoJSONFeatureCollection | null> {
@@ -124,6 +125,7 @@ async function fetchWineRegionsGeoJSON(regionName: string | null): Promise<GeoJS
     request: "GetFeature",
     typename: WFS_LAYER,
     outputFormat: "application/json",
+    srsName: "EPSG:4326",
   });
   const url = `${WFS_URL}?${params.toString()}`;
   try {

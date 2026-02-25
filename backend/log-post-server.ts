@@ -60,7 +60,8 @@ function parseBody(req: http.IncomingMessage): Promise<string> {
 /**
  * Fetches wine region features from WFS (BKG). Filters veg === "1040" (wine).
  * If regionName is provided, filters by properties.nam (exact match).
- * Returns array of GeoJSON features, or [] on error/timeout.
+ * Requests srsName=EPSG:4326 so geometry is in WGS84 (lon/lat), equivalent to
+ * ST_AsGeoJSON(ST_Transform(geom, 4326)). Returns array of GeoJSON features, or [] on error/timeout.
  */
 async function fetchWineRegionsFromWFS(regionName?: string | null): Promise<Array<{ geometry?: unknown; properties?: Record<string, unknown> }>> {
   if (regionName == null || String(regionName).trim() === "") return [];
@@ -70,6 +71,7 @@ async function fetchWineRegionsFromWFS(regionName?: string | null): Promise<Arra
     request: "GetFeature",
     typename: WFS_LAYER,
     outputFormat: "application/json",
+    srsName: "EPSG:4326",
   });
   const url = `${WFS_URL}?${params.toString()}`;
   const controller = new AbortController();
