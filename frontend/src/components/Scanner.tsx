@@ -19,6 +19,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [analysisResult, setAnalysisResult] = useState<NormalizedWineResult | null>(null);
   const [scanFileMeta, setScanFileMeta] = useState<{ name?: string; size?: number; type?: string } | null>(null);
+  const [isSavingLog, setIsSavingLog] = useState(false);
+  const [saveLocked, setSaveLocked] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -97,6 +99,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
   };
 
   const performScan = async (file: File) => {
+    setSaveLocked(false);
+    setIsSavingLog(false);
     setIsScanning(true);
     setError(null);
     setShowManualPrompt(false);
@@ -127,6 +131,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
   const startManualEntry = () => {
     getCurrentLocation();
+    setSaveLocked(false);
+    setIsSavingLog(false);
     setAnalysisResult(null);
     setScanFileMeta(null);
     setScanResult({
@@ -143,6 +149,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
   };
 
   const handleSave = async (formData: Record<string, unknown>) => {
+    if (saveLocked) return;
+    setSaveLocked(true);
+    setIsSavingLog(true);
     try {
       await storage.saveBottle({
         ...formData,
@@ -155,7 +164,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
       });
       onComplete();
     } catch {
-      setError("Failed to save bottle log.");
+      setError("Failed to save bottle log. Start a new scan and try again.");
+    } finally {
+      setIsSavingLog(false);
     }
   };
 
@@ -165,7 +176,13 @@ export default function Scanner({ onComplete }: ScannerProps) {
         <div className="flex justify-between items-center mb-6">
           <h2 className="text-2xl font-serif italic text-[#5A5A40]">Confirm Details</h2>
           <button
-            onClick={() => { setScanResult(null); setCapturedImage(null); setShowManualPrompt(false); }}
+            onClick={() => {
+              setScanResult(null);
+              setCapturedImage(null);
+              setShowManualPrompt(false);
+              setSaveLocked(false);
+              setIsSavingLog(false);
+            }}
             className="p-2 text-[#A1A19A] hover:text-[#5A5A40]"
           >
             <X size={20} />
@@ -174,8 +191,16 @@ export default function Scanner({ onComplete }: ScannerProps) {
         <BottleForm
           initialData={scanResult}
           onSave={handleSave}
-          onCancel={() => { setScanResult(null); setCapturedImage(null); setShowManualPrompt(false); }}
+          onCancel={() => {
+            setScanResult(null);
+            setCapturedImage(null);
+            setShowManualPrompt(false);
+            setSaveLocked(false);
+            setIsSavingLog(false);
+          }}
           currentCoords={location}
+          isSaving={isSavingLog}
+          saveLocked={saveLocked}
         />
       </div>
     );
@@ -302,11 +327,15 @@ function BottleForm({
   onSave,
   onCancel,
   currentCoords,
+  isSaving,
+  saveLocked,
 }: {
   initialData: ScanResult;
   onSave: (data: Record<string, unknown>) => Promise<void> | void;
   onCancel: () => void;
   currentCoords: { lat: number; lng: number } | null;
+  isSaving: boolean;
+  saveLocked: boolean;
 }) {
   const [formData, setFormData] = useState({
     brand: initialData.brand || "",
@@ -321,6 +350,7 @@ function BottleForm({
   });
 
   const handleFinalSave = () => {
+    if (saveLocked) return;
     const finalData = { ...formData };
     if (formData.city === "GPS Location" && currentCoords) {
       onSave({ ...finalData, lat: currentCoords.lat, lng: currentCoords.lng, city: "Current Location" });
@@ -394,7 +424,15 @@ function BottleForm({
 
       <div className="flex gap-4 pt-4">
         <button onClick={onCancel} className="flex-1 py-4 rounded-2xl font-bold text-sm text-[#A1A19A] bg-white border border-black/5">Cancel</button>
-        <button onClick={handleFinalSave} className="flex-1 py-4 rounded-2xl font-bold text-sm text-white bg-[#5A5A40] shadow-lg shadow-[#5A5A40]/20">Save Log</button>
+        <button
+          onClick={handleFinalSave}
+          disabled={saveLocked}
+          className={`flex-1 py-4 rounded-2xl font-bold text-sm text-white shadow-lg shadow-[#5A5A40]/20 transition-opacity ${
+            saveLocked ? "bg-[#5A5A40]/70 cursor-not-allowed" : "bg-[#5A5A40]"
+          }`}
+        >
+          {isSaving ? "Saving..." : saveLocked ? "Saved" : "Save Log"}
+        </button>
       </div>
     </div>
   );

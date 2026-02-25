@@ -1,15 +1,23 @@
 import { useState, useEffect } from "react";
 import { Bottle } from "../types";
-import storage, { getLogServerBase } from "../lib/storage";
+import storage from "../lib/storage";
 import { Search, Calendar, MapPin, Star, ChevronRight } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import BottleDetail from "./BottleDetail";
+
+const LOG_POST_URL = (import.meta.env.VITE_LOG_POST_URL as string) || "http://localhost:3001/log-post";
+const LOG_SERVER_BASE = LOG_POST_URL.replace(/\/log-post\/?$/, "");
 
 function resolveImageSrc(image: string): string {
   if (!image) return "";
   if (image.startsWith("data:")) return image;
   if (image.startsWith("http://") || image.startsWith("https://")) return image;
-  if (image.startsWith("/post-images/")) return `${getLogServerBase()}${image}`;
+  if (image.startsWith("/post-images/")) {
+    const fallbackBase =
+      LOG_SERVER_BASE ||
+      (typeof window !== "undefined" ? `${window.location.protocol}//${window.location.hostname}:3001` : "http://localhost:3001");
+    return `${fallbackBase}${image}`;
+  }
   return image;
 }
 

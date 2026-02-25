@@ -21,9 +21,7 @@ frontend/.env.local
 backend/.secrets*.env
 backend/post-requests/
 bin/
-backend/post_images/
-
-
+post_images/
 .github/workflows/
 
 # Editor directories and files

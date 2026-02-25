@@ -3,42 +3,8 @@ import { Bottle, Stats } from "../types";
 const STORAGE_KEY = "winetrack_bottles_v1";
 const ID_KEY = "winetrack_next_id_v1";
 const LOG_POST_URL = (import.meta.env.VITE_LOG_POST_URL as string) || "http://localhost:3001/log-post";
-const LOG_SERVER_BASE = LOG_POST_URL.replace(/\/log-post\/?$/, "").replace(/\/$/, "");
+const REQUEST_TIMEOUT_MS = 8000;
 type ScanFileMeta = { name?: string; size?: number; type?: string } | null;
-
-function getLogServerCandidates(): string[] {
-  const candidates = new Set<string>();
-  if (LOG_SERVER_BASE) candidates.add(LOG_SERVER_BASE);
-  if (typeof window !== "undefined" && window.location?.hostname) {
-    candidates.add(`${window.location.protocol}//${window.location.hostname}:3001`);
-  }
-  candidates.add("http://localhost:3001");
-  return Array.from(candidates);
-}
-
-export function getLogServerBase(): string {
-  return getLogServerCandidates()[0];
-}
-
-async function fetchWithServerFallback(path: string, init?: RequestInit): Promise<Response> {
-  const candidates = getLogServerCandidates();
-  let lastError: unknown = null;
-  for (const base of candidates) {
-    const url = `${base}${path}`;
-    try {
-      const res = await fetch(url, init);
-      if (res.ok) return res;
-      if (res.status >= 500) {
-        lastError = new Error(`Server error at ${url}: ${res.status}`);
-        continue;
-      }
-      return res;
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("Failed to connect to log server");
-}
 
 function loadBottles(): Bottle[] {
   try {
@@ -51,11 +17,40 @@ function loadBottles(): Bottle[] {
   }
 }
 
-function saveBottles(bottles: Bottle[], notify = true) {
+function normalizeLogServerBase(input: string): string {
+  const trimmed = input.trim();
+  if (!trimmed) return "";
+  return trimmed.replace(/\/log-post\/?$/, "").replace(/\/+$/, "");
+}
+
+function getLogServerBases(): string[] {
+  const rawEnv = LOG_POST_URL.trim();
+  const fromEnv = normalizeLogServerBase(LOG_POST_URL);
+  const candidates = [fromEnv, "http://localhost:3001"];
+  if (typeof window !== "undefined") {
+    candidates.push(normalizeLogServerBase(window.location.origin));
+    if (rawEnv.startsWith("/")) {
+      candidates.push(normalizeLogServerBase(new URL(rawEnv, window.location.origin).toString()));
+    }
+  }
+  return Array.from(new Set(candidates.filter(Boolean)));
+}
+
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function saveBottles(bottles: Bottle[], emitEvent = true) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(bottles));
   const nextId = bottles.length > 0 ? Math.max(...bottles.map((b) => b.id)) + 1 : 1;
   localStorage.setItem(ID_KEY, String(nextId));
-  if (notify) {
+  if (emitEvent) {
     window.dispatchEvent(new CustomEvent("winetrack:data-changed"));
   }
 }
@@ -65,12 +60,23 @@ export function getAllBottles(): Bottle[] {
 }
 
 export async function syncBottlesFromFiles(): Promise<Bottle[]> {
+  let lastError: unknown = null;
   try {
-    const res = await fetchWithServerFallback("/bottles");
-    if (!res.ok) throw new Error(`Failed to load bottles: ${res.status}`);
-    const bottles = (await res.json()) as Bottle[];
-    saveBottles(Array.isArray(bottles) ? bottles : [], false);
-    return getAllBottles();
+    for (const base of getLogServerBases()) {
+      try {
+        const res = await fetchWithTimeout(`${base}/bottles`);
+        if (!res.ok) {
+          lastError = new Error(`Failed to load bottles: ${res.status}`);
+          continue;
+        }
+        const bottles = (await res.json()) as Bottle[];
+        saveBottles(Array.isArray(bottles) ? bottles : [], false);
+        return getAllBottles();
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("No available log server");
   } catch (e) {
     console.warn("Using local cached bottles. Could not sync from GeoJSON files.", e);
     return getAllBottles();
@@ -108,44 +114,46 @@ function saveBottleLocal(data: Partial<Bottle>): Bottle {
 export async function saveBottle(
   data: Partial<Bottle> & { analysis_result?: unknown; scan_file?: ScanFileMeta },
 ): Promise<Bottle> {
+  const bases = getLogServerBases();
   try {
-    const res = await fetchWithServerFallback("/save-bottle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        endpoint: "wine-log",
-        bottle: {
-          brand: data.brand ?? null,
-          producer: data.producer ?? null,
-          year: data.year ?? null,
-          region: data.region ?? null,
-          wine_type: data.wine_type ?? null,
-          is_german: data.is_german ?? true,
-          city: data.city ?? null,
-          score: data.score ?? null,
-          notes: data.notes ?? null,
-          lat: data.lat ?? null,
-          lng: data.lng ?? null,
-          image: data.image ?? null,
-          timestamp: data.timestamp ?? new Date().toISOString(),
-        },
-        analysis_result: data.analysis_result ?? null,
-        scan_file: data.scan_file ?? null,
-      }),
-    });
+    for (const base of bases) {
+      const res = await fetch(`${base}/save-bottle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpoint: "wine-log",
+          bottle: {
+            brand: data.brand ?? null,
+            producer: data.producer ?? null,
+            year: data.year ?? null,
+            region: data.region ?? null,
+            wine_type: data.wine_type ?? null,
+            is_german: data.is_german ?? true,
+            city: data.city ?? null,
+            score: data.score ?? null,
+            notes: data.notes ?? null,
+            lat: data.lat ?? null,
+            lng: data.lng ?? null,
+            image: data.image ?? null,
+            timestamp: data.timestamp ?? new Date().toISOString(),
+          },
+          analysis_result: data.analysis_result ?? null,
+          scan_file: data.scan_file ?? null,
+        }),
+      });
 
-    if (!res.ok) {
-      if (res.status === 404) {
-        throw new Error("GeoJSON DB endpoint not found. Restart backend log server to load latest /save-bottle route.");
+      if (!res.ok) {
+        if (res.status === 404) continue;
+        throw new Error(`Failed to save to GeoJSON DB: ${res.status}`);
       }
-      throw new Error(`Failed to save to GeoJSON DB: ${res.status}`);
+      const body = (await res.json()) as { bottle?: Bottle };
+      await syncBottlesFromFiles();
+      if (body?.bottle) return body.bottle;
+      const latest = getAllBottles()[0];
+      if (latest) return latest;
+      throw new Error("Bottle saved but no response bottle");
     }
-    const body = (await res.json()) as { bottle?: Bottle };
-    await syncBottlesFromFiles();
-    if (body?.bottle) return body.bottle;
-    const latest = getAllBottles()[0];
-    if (latest) return latest;
-    throw new Error("Bottle saved but no response bottle");
+    throw new Error("GeoJSON DB endpoint not found. Restart backend log server to load latest routes.");
   } catch (e) {
     console.warn("Falling back to localStorage save. GeoJSON DB unavailable.", e);
     return saveBottleLocal(data);
@@ -164,19 +172,23 @@ export function updateBottle(id: number, patch: Partial<Bottle>): Bottle | null 
 
 export async function deleteBottle(id: number): Promise<boolean> {
   try {
+    const bases = getLogServerBases();
     const bottles = loadBottles();
     const target = bottles.find((b) => b.id === id);
     if (!target) return false;
 
     if (target.file_name) {
-      const res = await fetchWithServerFallback("/delete-bottle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ file_name: target.file_name }),
-      });
-      if (!res.ok) return false;
-      await syncBottlesFromFiles();
-      return true;
+      for (const base of bases) {
+        const res = await fetch(`${base}/delete-bottle`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_name: target.file_name }),
+        });
+        if (!res.ok) continue;
+        await syncBottlesFromFiles();
+        return true;
+      }
+      return false;
     }
 
     const filtered = bottles.filter((b) => b.id !== id);
@@ -248,7 +260,6 @@ export async function fetchRegionsGeoJSON(): Promise<unknown> {
 }
 
 export default {
-  getLogServerBase,
   syncBottlesFromFiles,
   getAllBottles,
   saveBottle,
