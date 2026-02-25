@@ -24,6 +24,48 @@ npm run dev
 - **`npm run serve`** – serves Supabase functions locally (requires [Supabase CLI](https://supabase.com/docs/guides/cli)).
 - **`npm run log`** – runs only the backend log server (port 3001). Use if you run the frontend separately and want GeoJSON stored.
 
+## How to set up `.env`
+
+The app reads environment variables from a **`.env` file at the repo root**. The file is not committed (it’s in `.gitignore`). Set it up before running the app.
+
+### 1. Create the file
+
+In the **repo root** (same folder as `package.json`), create a file named `.env`.
+
+### 2. Add the required variables
+
+Copy the contents of **`.env.example`** and replace the placeholders with your project’s values:
+
+```env
+VITE_SUPABASE_PROJECT_ID="your-project-ref"
+VITE_SUPABASE_URL="https://your-project-ref.supabase.co"
+VITE_SUPABASE_PUBLISHABLE_KEY="your-anon-public-key"
+```
+
+### 3. Where to get the values
+
+1. Open your project in the [Supabase Dashboard](https://supabase.com/dashboard).
+2. Go to **Project Settings** (gear icon) → **API**.
+3. Copy:
+   - **Project URL** → use as `VITE_SUPABASE_URL`
+   - **anon public** key → use as `VITE_SUPABASE_PUBLISHABLE_KEY`
+   - **Project ref** (in the dashboard URL or under “Reference ID”) → use as `VITE_SUPABASE_PROJECT_ID`
+
+Example (replace with your real values):
+
+```env
+VITE_SUPABASE_PROJECT_ID="abcdefghijklmnop"
+VITE_SUPABASE_URL="https://abcdefghijklmnop.supabase.co"
+VITE_SUPABASE_PUBLISHABLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
+```
+
+### 4. For new collaborators
+
+- **Option A:** Someone with access sends the three values securely (e.g. password manager or secure channel). The collaborator creates `.env` at the repo root and pastes them in.
+- **Option B:** The collaborator creates their own Supabase project, gets the URL, anon key, and project ref from Dashboard → Settings → API, and puts them in `.env`. (Wine analysis will work only after `RAPIDAPI_KEY` is set in that project’s Edge Function secrets.)
+
+Do not commit `.env` or share it in chat or email.
+
 ## CI (GitHub Actions)
 
 A workflow in **`.github/workflows/build.yml`** runs on every push to `main`: it installs dependencies and runs `npm run build` (frontend). To use it, add these **repository secrets** in GitHub (Settings → Secrets and variables → Actions):
@@ -44,7 +86,7 @@ supabase functions serve
 
 ## Environment variables
 
-- **Frontend (`.env` at repo root or `frontend/.env`):** Use the **`VITE_`** prefix for any variable read by the Vite app (e.g. `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_SUPABASE_PROJECT_ID`). Only `VITE_` vars are exposed to the client; do not use this prefix for backend-only secrets.
+- **Frontend:** The app reads **`.env` at the repo root** (see [How to set up `.env`](#how-to-set-up-env)). Use the **`VITE_`** prefix for variables read by the Vite app (e.g. `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `VITE_SUPABASE_PROJECT_ID`). Only `VITE_` vars are exposed to the client; do not use this prefix for backend-only secrets.
 - **Backend / Node:** Use **no prefix** (e.g. `LOG_POST_PORT`). The log server and other Node scripts read `process.env.*`; they do not use `VITE_`.
 - **Supabase Edge Functions (recognize-wine, etc.):** They run in Supabase’s cloud and read **Supabase secrets**, not the repo’s `.env`. Set secrets in the [Supabase Dashboard](https://supabase.com/dashboard) under **Project → Edge Functions → Secrets**, or via CLI:
   ```sh
@@ -104,7 +146,7 @@ To point the app and CLI at a different Supabase project:
 
 1. Create or open the new project in the [Supabase Dashboard](https://supabase.com/dashboard).
 2. In the new project: **Project Settings → API** — copy **Project URL**, **anon public** key, and **Project ref** (from the dashboard URL).
-3. **Root `.env`** (and `frontend/.env` if you use it): set `VITE_SUPABASE_PROJECT_ID`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_PUBLISHABLE_KEY` to the new project’s values.
+3. **Root `.env`:** set `VITE_SUPABASE_PROJECT_ID`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_PUBLISHABLE_KEY` to the new project’s values.
 4. **`backend/supabase/config.toml`:** set `project_id = "<new-project-ref>"`.
 5. **Re-link and redeploy:** from `backend/` run `supabase link --project-ref <new-project-ref>`, then set any secrets (e.g. `supabase secrets set RAPIDAPI_KEY=...`) and run `supabase functions deploy`.
 
