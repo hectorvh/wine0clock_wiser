@@ -24,6 +24,16 @@ npm run dev
 - **`npm run serve`** – serves Supabase functions locally (requires [Supabase CLI](https://supabase.com/docs/guides/cli)).
 - **`npm run log`** – runs only the backend log server (port 3001). Use if you run the frontend separately and want GeoJSON stored.
 
+## CI (GitHub Actions)
+
+A workflow in **`.github/workflows/build.yml`** runs on every push to `main`: it installs dependencies and runs `npm run build` (frontend). To use it, add these **repository secrets** in GitHub (Settings → Secrets and variables → Actions):
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+- `VITE_SUPABASE_PROJECT_ID`
+
+They are injected as env vars during the build so Vite can read `import.meta.env.VITE_*`.
+
 Backend commands use **`backend/supabase/`**; run Supabase CLI from **`backend/`**:
 
 ```sh
