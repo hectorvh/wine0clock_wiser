@@ -1,9 +1,17 @@
 import { useState, useEffect } from "react";
 import { Bottle } from "../types";
-import storage from "../lib/storage";
+import storage, { getLogServerBase } from "../lib/storage";
 import { Search, Calendar, MapPin, Star, ChevronRight } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import BottleDetail from "./BottleDetail";
+
+function resolveImageSrc(image: string): string {
+  if (!image) return "";
+  if (image.startsWith("data:")) return image;
+  if (image.startsWith("http://") || image.startsWith("https://")) return image;
+  if (image.startsWith("/post-images/")) return `${getLogServerBase()}${image}`;
+  return image;
+}
 
 export default function BottleList() {
   const [bottles, setBottles] = useState<Bottle[]>([]);
@@ -25,7 +33,10 @@ export default function BottleList() {
   const fetchBottles = async () => {
     try {
       await storage.syncBottlesFromFiles();
-      const data = storage.getAllBottles();
+      const data = storage.getAllBottles().map((bottle) => ({
+        ...bottle,
+        image: resolveImageSrc(bottle.image),
+      }));
       setBottles(data);
     } catch (err) {
       console.error(err);
@@ -35,8 +46,15 @@ export default function BottleList() {
   };
 
   const filteredBottles = bottles.filter((b) => {
-    const matchesSearch = b.brand.toLowerCase().includes(search.toLowerCase())
-      || b.producer.toLowerCase().includes(search.toLowerCase());
+    const term = search.toLowerCase();
+    const matchesSearch =
+      b.brand.toLowerCase().includes(term) ||
+      b.producer.toLowerCase().includes(term) ||
+      b.region.toLowerCase().includes(term) ||
+      b.wine_type.toLowerCase().includes(term) ||
+      b.city.toLowerCase().includes(term) ||
+      b.notes.toLowerCase().includes(term) ||
+      String(b.year).includes(term);
     const matchesRegion = !filterRegion || b.region === filterRegion;
     return matchesSearch && matchesRegion;
   });
@@ -124,6 +142,9 @@ function FilterButton({ active, onClick, label }: { active: boolean; onClick: ()
 
 function BottleCard({ bottle, onClick }: { bottle: Bottle; onClick: () => void }) {
   const date = new Date(bottle.timestamp).toLocaleDateString("de-DE", { day: "2-digit", month: "short", year: "numeric" });
+  const shortNotes = bottle.notes?.trim() ? bottle.notes.trim().slice(0, 80) : "";
+  const lat = Number.isFinite(bottle.lat) ? bottle.lat : 0;
+  const lng = Number.isFinite(bottle.lng) ? bottle.lng : 0;
 
   return (
     <motion.div
@@ -145,13 +166,24 @@ function BottleCard({ bottle, onClick }: { bottle: Bottle; onClick: () => void }
       <div className="flex-1 flex flex-col justify-between py-1">
         <div>
           <div className="flex justify-between items-start">
-            <h3 className="text-sm font-bold text-[#1A1A1A] line-clamp-1">{bottle.brand}</h3>
+            <h3 className="text-sm font-bold text-[#1A1A1A] line-clamp-1">{bottle.brand || "Unknown"}</h3>
             <div className="flex items-center gap-1 text-[#D4AF37]">
               <Star size={12} fill="currentColor" />
               <span className="text-xs font-bold">{bottle.score}</span>
             </div>
           </div>
-          <p className="text-xs text-[#A1A19A]">{bottle.producer} · {bottle.year}</p>
+          <p className="text-xs text-[#A1A19A]">{bottle.producer || "Unknown producer"} · {bottle.year}</p>
+          <p className="text-[11px] text-[#7A7A65] mt-1">
+            {bottle.region || "Unknown region"} · {bottle.wine_type || "Unknown type"}
+          </p>
+          <p className="text-[11px] text-[#7A7A65]">
+            {bottle.city || "Unknown city"} · {lat.toFixed(5)}, {lng.toFixed(5)}
+          </p>
+          {shortNotes && (
+            <p className="text-[11px] text-[#8B8B78] line-clamp-2 mt-1">
+              {shortNotes}
+            </p>
+          )}
         </div>
         <div className="flex items-center justify-between mt-2">
           <div className="flex items-center gap-3">
@@ -162,6 +194,9 @@ function BottleCard({ bottle, onClick }: { bottle: Bottle; onClick: () => void }
             <div className="flex items-center gap-1 text-[10px] font-bold text-[#A1A19A] uppercase tracking-wider">
               <Calendar size={10} />
               {date}
+            </div>
+            <div className="text-[10px] font-bold text-[#A1A19A] uppercase tracking-wider">
+              {bottle.is_german ? "German" : "Non-German"}
             </div>
           </div>
           <ChevronRight size={16} className="text-[#A1A19A] group-hover:translate-x-1 transition-transform" />

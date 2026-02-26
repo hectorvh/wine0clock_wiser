@@ -53,6 +53,7 @@ interface GeoJSONOutput {
 
 interface BottleView {
   id: number;
+  file_name: string;
   image: string;
   brand: string;
   producer: string;
@@ -73,6 +74,10 @@ interface SaveBottleBody {
   bottle?: Record<string, unknown>;
   analysis_result?: unknown;
   scan_file?: { name?: string; size?: number; type?: string } | null;
+}
+
+interface DeleteBottleBody {
+  file_name?: string;
 }
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
@@ -199,6 +204,7 @@ function readBottlesFromGeoJSONFiles(): BottleView[] {
           : asNumber(manual.year, new Date().getFullYear());
 
       rows.push({
+        file_name: file,
         image,
         brand:
           (typeof manual.brand === "string" && manual.brand) ||
@@ -303,6 +309,23 @@ function buildGeoJSON(payload: LogPayload | undefined, geometryOverride: unknown
       },
     ],
   };
+}
+
+function extractImageFilePathFromGeoJSON(geojsonPath: string): string | null {
+  try {
+    const raw = fs.readFileSync(geojsonPath, "utf8");
+    const parsed = JSON.parse(raw) as { features?: Array<{ properties?: Record<string, unknown> }> };
+    const feature = Array.isArray(parsed?.features) && parsed.features.length > 0 ? parsed.features[0] : null;
+    const properties = toObject(feature?.properties);
+    const manual = toObject(properties.manual);
+    const imagePath = typeof manual.image_path === "string" ? manual.image_path : "";
+    if (!imagePath.startsWith("/post-images/")) return null;
+    const imageName = path.basename(imagePath);
+    if (!imageName) return null;
+    return path.join(POST_IMAGES_DIR, imageName);
+  } catch {
+    return null;
+  }
 }
 
 const server = http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -447,6 +470,64 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const bottles = readBottlesFromGeoJSONFiles();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, file: filename, bottle: bottles[0] ?? null }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/delete-bottle") {
+    let body: string;
+    try {
+      body = await parseBody(req);
+    } catch {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Failed to read body" }));
+      return;
+    }
+
+    let data: DeleteBottleBody;
+    try {
+      data = JSON.parse(body) as DeleteBottleBody;
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      return;
+    }
+
+    const requestedName = typeof data.file_name === "string" ? data.file_name.trim() : "";
+    const fileName = path.basename(requestedName);
+    if (!fileName || !fileName.toLowerCase().endsWith(".geojson")) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid file_name" }));
+      return;
+    }
+
+    const geojsonPath = path.join(POST_REQUESTS_DIR, fileName);
+    if (!geojsonPath.startsWith(POST_REQUESTS_DIR)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid file_name" }));
+      return;
+    }
+
+    const imagePath = extractImageFilePathFromGeoJSON(geojsonPath);
+    let imageDeleted = false;
+    if (imagePath && imagePath.startsWith(POST_IMAGES_DIR)) {
+      try {
+        fs.unlinkSync(imagePath);
+        imageDeleted = true;
+      } catch {
+        imageDeleted = false;
+      }
+    }
+
+    try {
+      fs.unlinkSync(geojsonPath);
+    } catch {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "GeoJSON file not found" }));
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, deleted: { geojson: true, image: imageDeleted } }));
     return;
   }
 

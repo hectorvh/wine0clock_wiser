@@ -34,12 +34,12 @@ export default function BottleDetail({ bottle, onClose, onUpdate }: BottleDetail
     const ok = window.confirm("Delete this log? This action cannot be undone.");
     if (!ok) return;
     try {
-      const deleted = storage.deleteBottle(bottle.id);
+      const deleted = await storage.deleteBottle(bottle.id);
       if (deleted) {
         onUpdate();
         onClose();
       } else {
-        alert("Failed to delete the log.");
+        alert("Failed to delete the log file from the backend.");
       }
     } catch (err) {
       console.error(err);

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { MapContainer, TileLayer, Marker, Popup, GeoJSON, Circle } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, GeoJSON, Circle, CircleMarker } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import storage from "../lib/storage";
 import L from "leaflet";
@@ -29,6 +29,14 @@ interface AggregatedProd {
   region: string;
   count: number;
   brands: string;
+}
+
+function getProductionMarkerPosition(idx: number, total: number): [number, number] {
+  const centerLat = 51.1657;
+  const centerLng = 10.4515;
+  const angle = (2 * Math.PI * idx) / Math.max(total, 1);
+  const radius = 1.2 + (idx % 3) * 0.45;
+  return [centerLat + Math.sin(angle) * radius, centerLng + Math.cos(angle) * radius];
 }
 
 export default function WineMap() {
@@ -91,28 +99,35 @@ export default function WineMap() {
                 fillOpacity: prodData ? 0.4 : 0.1,
               };
             }}
-            onEachFeature={(feature, layer) => {
-              const regionName = feature?.properties?.name as string | undefined;
-              const prodData = aggregatedData?.production?.find((p) => p.region === regionName);
-              if (prodData) {
-                layer.bindPopup(`
-                  <div class="p-2 space-y-2">
-                    <p class="font-bold text-sm text-[#5A5A40]">${regionName}</p>
-                    <p class="text-xs font-bold uppercase tracking-wider text-[#A1A19A]">Production Stats</p>
-                    <div class="flex justify-between items-center">
-                      <span class="text-xs">Bottles Logged:</span>
-                      <span class="text-xs font-bold">${prodData.count}</span>
-                    </div>
-                    <div class="pt-2 border-t border-black/5">
-                      <p class="text-[10px] font-bold uppercase text-[#A1A19A] mb-1">Brands from here:</p>
-                      <p class="text-[10px] italic">${prodData.brands}</p>
-                    </div>
-                  </div>
-                `);
-              }
-            }}
           />
         )}
+
+        {viewMode === "production" && aggregatedData?.production?.map((prod, idx, arr) => {
+          const [lat, lng] = getProductionMarkerPosition(idx, arr.length);
+          return (
+            <CircleMarker
+              key={`${prod.region}-${idx}`}
+              center={[lat, lng]}
+              radius={Math.max(6, Math.min(22, 6 + prod.count * 1.5))}
+              pathOptions={{ color: "#5A5A40", fillColor: "#5A5A40", fillOpacity: 0.45, weight: 1 }}
+            >
+              <Popup>
+                <div className="p-2 space-y-2">
+                  <p className="font-bold text-sm text-[#5A5A40]">{prod.region || "Unknown region"}</p>
+                  <p className="text-xs font-bold uppercase tracking-wider text-[#A1A19A]">Production Stats</p>
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs">Bottles Logged:</span>
+                    <span className="text-xs font-bold">{prod.count}</span>
+                  </div>
+                  <div className="pt-2 border-t border-black/5">
+                    <p className="text-[10px] font-bold uppercase text-[#A1A19A] mb-1">Brands from here:</p>
+                    <p className="text-[10px] italic">{prod.brands || "N/A"}</p>
+                  </div>
+                </div>
+              </Popup>
+            </CircleMarker>
+          );
+        })}
 
         {viewMode === "consumption" && aggregatedData?.consumption?.map((point, idx) => {
           if (!point.lat || !point.lng) return null;

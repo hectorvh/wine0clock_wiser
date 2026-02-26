@@ -1,5 +1,6 @@
 export interface Bottle {
   id: number;
+  file_name?: string;
   image: string;
   brand: string;
   producer: string;

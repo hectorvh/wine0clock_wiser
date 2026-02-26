@@ -3,8 +3,42 @@ import { Bottle, Stats } from "../types";
 const STORAGE_KEY = "winetrack_bottles_v1";
 const ID_KEY = "winetrack_next_id_v1";
 const LOG_POST_URL = (import.meta.env.VITE_LOG_POST_URL as string) || "http://localhost:3001/log-post";
-const LOG_SERVER_BASE = LOG_POST_URL.replace(/\/log-post\/?$/, "");
+const LOG_SERVER_BASE = LOG_POST_URL.replace(/\/log-post\/?$/, "").replace(/\/$/, "");
 type ScanFileMeta = { name?: string; size?: number; type?: string } | null;
+
+function getLogServerCandidates(): string[] {
+  const candidates = new Set<string>();
+  if (LOG_SERVER_BASE) candidates.add(LOG_SERVER_BASE);
+  if (typeof window !== "undefined" && window.location?.hostname) {
+    candidates.add(`${window.location.protocol}//${window.location.hostname}:3001`);
+  }
+  candidates.add("http://localhost:3001");
+  return Array.from(candidates);
+}
+
+export function getLogServerBase(): string {
+  return getLogServerCandidates()[0];
+}
+
+async function fetchWithServerFallback(path: string, init?: RequestInit): Promise<Response> {
+  const candidates = getLogServerCandidates();
+  let lastError: unknown = null;
+  for (const base of candidates) {
+    const url = `${base}${path}`;
+    try {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      if (res.status >= 500) {
+        lastError = new Error(`Server error at ${url}: ${res.status}`);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Failed to connect to log server");
+}
 
 function loadBottles(): Bottle[] {
   try {
@@ -17,11 +51,13 @@ function loadBottles(): Bottle[] {
   }
 }
 
-function saveBottles(bottles: Bottle[]) {
+function saveBottles(bottles: Bottle[], notify = true) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(bottles));
   const nextId = bottles.length > 0 ? Math.max(...bottles.map((b) => b.id)) + 1 : 1;
   localStorage.setItem(ID_KEY, String(nextId));
-  window.dispatchEvent(new CustomEvent("winetrack:data-changed"));
+  if (notify) {
+    window.dispatchEvent(new CustomEvent("winetrack:data-changed"));
+  }
 }
 
 export function getAllBottles(): Bottle[] {
@@ -30,10 +66,10 @@ export function getAllBottles(): Bottle[] {
 
 export async function syncBottlesFromFiles(): Promise<Bottle[]> {
   try {
-    const res = await fetch(`${LOG_SERVER_BASE}/bottles`);
+    const res = await fetchWithServerFallback("/bottles");
     if (!res.ok) throw new Error(`Failed to load bottles: ${res.status}`);
     const bottles = (await res.json()) as Bottle[];
-    saveBottles(Array.isArray(bottles) ? bottles : []);
+    saveBottles(Array.isArray(bottles) ? bottles : [], false);
     return getAllBottles();
   } catch (e) {
     console.warn("Using local cached bottles. Could not sync from GeoJSON files.", e);
@@ -73,7 +109,7 @@ export async function saveBottle(
   data: Partial<Bottle> & { analysis_result?: unknown; scan_file?: ScanFileMeta },
 ): Promise<Bottle> {
   try {
-    const res = await fetch(`${LOG_SERVER_BASE}/save-bottle`, {
+    const res = await fetchWithServerFallback("/save-bottle", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -126,9 +162,23 @@ export function updateBottle(id: number, patch: Partial<Bottle>): Bottle | null 
   return updated;
 }
 
-export function deleteBottle(id: number): boolean {
+export async function deleteBottle(id: number): Promise<boolean> {
   try {
     const bottles = loadBottles();
+    const target = bottles.find((b) => b.id === id);
+    if (!target) return false;
+
+    if (target.file_name) {
+      const res = await fetchWithServerFallback("/delete-bottle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_name: target.file_name }),
+      });
+      if (!res.ok) return false;
+      await syncBottlesFromFiles();
+      return true;
+    }
+
     const filtered = bottles.filter((b) => b.id !== id);
     if (filtered.length === bottles.length) return false;
     saveBottles(filtered);
@@ -198,6 +248,7 @@ export async function fetchRegionsGeoJSON(): Promise<unknown> {
 }
 
 export default {
+  getLogServerBase,
   syncBottlesFromFiles,
   getAllBottles,
   saveBottle,
