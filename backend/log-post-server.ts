@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.LOG_POST_PORT) || 3001;
 const POST_REQUESTS_DIR = path.join(__dirname, "post-requests");
+// Dev fallback until auth is implemented. Can be overridden via env.
+const DEV_USER_ID = process.env.LOG_POST_DEV_USER_ID || "admin-dev";
 
 // WFS (BKG) wine regions: layer dlm1000:objart_43001_f, veg "1040" = wine
 const WFS_URL = "https://sgx.geodatenzentrum.de/wfs_dlm1000";
@@ -112,6 +114,7 @@ function buildGeoJSON(payload: LogPayload | undefined, geometryOverride: unknown
         type: "Feature",
         geometry,
         properties: {
+          user_id: DEV_USER_ID,
           request: payload?.request ?? null,
           response: payload?.response ?? null,
           error: payload?.error ?? null,
