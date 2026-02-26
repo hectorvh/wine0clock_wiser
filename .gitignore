@@ -19,6 +19,7 @@ dist-ssr
 frontend/.env
 frontend/.env.local
 backend/.secrets*.env
+backend/post-requests/
 
 # Editor directories and files
 .vscode/*

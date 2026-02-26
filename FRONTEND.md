@@ -161,12 +161,63 @@ When your new app is ready to become the default:
 
 ---
 
-## 4. Quick reference
+## 4. Migration completed in this repo (what was done)
+
+This repository has already completed a frontend swap/migration.
+
+### Source and target
+
+- **Source app:** previous `frontend/` implementation.
+- **Target app:** WineTrack UI/UX migrated into the active `frontend/` workspace (in-place replacement).
+- **Removed reference source:** `winetrack-main/` was deleted after migration/cleanup.
+
+### What changed
+
+1. **Frontend shell replaced in place**  
+   The active app now uses the migrated WineTrack structure in `frontend/src` (`App`, scanner flow, bottle list/detail, map, storage/types).
+
+2. **Backend contract preserved**  
+   The migrated scanner calls the same Supabase Edge Function contract:
+   - `recognize-wine?mode=<mode>&lang=<lang>`
+   - `FormData` with `file`
+   - handles normalized response shape
+
+3. **Dev GeoJSON logging preserved**  
+   Frontend still POSTs request/response payloads to:
+   - `VITE_LOG_POST_URL` (default `http://localhost:3001/log-post`)
+   - backend log server writes files to `backend/post-requests/`.
+
+4. **Environment source normalized**  
+   Frontend reads env from **root `.env`** (repo root), not `frontend/.env`.
+   Required variables:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY`
+   Optional:
+   - `VITE_SUPABASE_PROJECT_ID`
+   - `VITE_LOG_POST_URL`
+
+5. **Legacy frontend leftovers removed**  
+   Unused old pages/components from the previous frontend were deleted from `frontend/src` to avoid dual logic paths.
+
+6. **Backend safety**  
+   No backend behavior was removed. Edge Functions and log server flow remain the source of truth.
+
+### Current run commands (after migration)
+
+- `npm run dev` → frontend + backend log server
+- `npm run dev:frontend` → frontend only
+- `npm run log` → backend log server only
+- `npm run serve` → Supabase functions local serve
+
+---
+
+## 5. Quick reference
 
 | Goal | Action |
 |------|--------|
 | Stop using current frontend | Remove or repoint root scripts; optionally remove `frontend` from workspaces and delete `frontend/`. |
 | Add a new frontend | Add folder, env, invoke logic per contract above, add to workspaces, point root scripts to it. |
+| Documented migration state | See section **“Migration completed in this repo (what was done)”** for the current in-place swap details. |
 | Run backend only | `npm run serve` from root, or `cd backend && supabase functions serve`. |
 | Run a specific frontend | `npm run dev -w <workspace-name>` (e.g. `frontend` or your new app folder name). |
 | Log POST requests as GeoJSON | Run `npm run log` (backend log server on port 3001). Any frontend can POST to `VITE_LOG_POST_URL` (default `http://localhost:3001/log-post`) with `{ endpoint, payload }`; backend writes to `backend/post-requests/*.geojson`. |
