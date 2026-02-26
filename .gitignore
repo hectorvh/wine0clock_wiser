@@ -20,6 +20,8 @@ frontend/.env
 frontend/.env.local
 backend/.secrets*.env
 backend/post-requests/
+bin/
+post_images/
 
 # Editor directories and files
 .vscode/*

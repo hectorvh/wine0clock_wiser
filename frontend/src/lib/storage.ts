@@ -2,6 +2,9 @@ import { Bottle, Stats } from "../types";
 
 const STORAGE_KEY = "winetrack_bottles_v1";
 const ID_KEY = "winetrack_next_id_v1";
+const LOG_POST_URL = (import.meta.env.VITE_LOG_POST_URL as string) || "http://localhost:3001/log-post";
+const LOG_SERVER_BASE = LOG_POST_URL.replace(/\/log-post\/?$/, "");
+type ScanFileMeta = { name?: string; size?: number; type?: string } | null;
 
 function loadBottles(): Bottle[] {
   try {
@@ -16,6 +19,8 @@ function loadBottles(): Bottle[] {
 
 function saveBottles(bottles: Bottle[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(bottles));
+  const nextId = bottles.length > 0 ? Math.max(...bottles.map((b) => b.id)) + 1 : 1;
+  localStorage.setItem(ID_KEY, String(nextId));
   window.dispatchEvent(new CustomEvent("winetrack:data-changed"));
 }
 
@@ -23,7 +28,20 @@ export function getAllBottles(): Bottle[] {
   return loadBottles().sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 }
 
-export function saveBottle(data: Partial<Bottle>): Bottle {
+export async function syncBottlesFromFiles(): Promise<Bottle[]> {
+  try {
+    const res = await fetch(`${LOG_SERVER_BASE}/bottles`);
+    if (!res.ok) throw new Error(`Failed to load bottles: ${res.status}`);
+    const bottles = (await res.json()) as Bottle[];
+    saveBottles(Array.isArray(bottles) ? bottles : []);
+    return getAllBottles();
+  } catch (e) {
+    console.warn("Using local cached bottles. Could not sync from GeoJSON files.", e);
+    return getAllBottles();
+  }
+}
+
+function saveBottleLocal(data: Partial<Bottle>): Bottle {
   const bottles = loadBottles();
   const nextId = parseInt(localStorage.getItem(ID_KEY) || "1", 10);
   const id = nextId;
@@ -49,6 +67,53 @@ export function saveBottle(data: Partial<Bottle>): Bottle {
   bottles.push(bottle);
   saveBottles(bottles);
   return bottle;
+}
+
+export async function saveBottle(
+  data: Partial<Bottle> & { analysis_result?: unknown; scan_file?: ScanFileMeta },
+): Promise<Bottle> {
+  try {
+    const res = await fetch(`${LOG_SERVER_BASE}/save-bottle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        endpoint: "wine-log",
+        bottle: {
+          brand: data.brand ?? null,
+          producer: data.producer ?? null,
+          year: data.year ?? null,
+          region: data.region ?? null,
+          wine_type: data.wine_type ?? null,
+          is_german: data.is_german ?? true,
+          city: data.city ?? null,
+          score: data.score ?? null,
+          notes: data.notes ?? null,
+          lat: data.lat ?? null,
+          lng: data.lng ?? null,
+          image: data.image ?? null,
+          timestamp: data.timestamp ?? new Date().toISOString(),
+        },
+        analysis_result: data.analysis_result ?? null,
+        scan_file: data.scan_file ?? null,
+      }),
+    });
+
+    if (!res.ok) {
+      if (res.status === 404) {
+        throw new Error("GeoJSON DB endpoint not found. Restart backend log server to load latest /save-bottle route.");
+      }
+      throw new Error(`Failed to save to GeoJSON DB: ${res.status}`);
+    }
+    const body = (await res.json()) as { bottle?: Bottle };
+    await syncBottlesFromFiles();
+    if (body?.bottle) return body.bottle;
+    const latest = getAllBottles()[0];
+    if (latest) return latest;
+    throw new Error("Bottle saved but no response bottle");
+  } catch (e) {
+    console.warn("Falling back to localStorage save. GeoJSON DB unavailable.", e);
+    return saveBottleLocal(data);
+  }
 }
 
 export function updateBottle(id: number, patch: Partial<Bottle>): Bottle | null {
@@ -133,6 +198,7 @@ export async function fetchRegionsGeoJSON(): Promise<unknown> {
 }
 
 export default {
+  syncBottlesFromFiles,
   getAllBottles,
   saveBottle,
   updateBottle,

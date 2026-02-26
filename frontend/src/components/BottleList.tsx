@@ -24,6 +24,7 @@ export default function BottleList() {
 
   const fetchBottles = async () => {
     try {
+      await storage.syncBottlesFromFiles();
       const data = storage.getAllBottles();
       setBottles(data);
     } catch (err) {

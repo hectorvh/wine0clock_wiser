@@ -51,8 +51,7 @@
             "errors": [
               "Rate limit exceeded. Please try again shortly."
             ]
-          },
-          "region_geojson": null
+          }
         },
         "error": null
       }

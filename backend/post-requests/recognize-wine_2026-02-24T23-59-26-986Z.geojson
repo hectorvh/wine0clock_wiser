@@ -1,129 +1,126 @@
-﻿{
-    "type":  "FeatureCollection",
-    "features":  [
-                     {
-                         "type":  "Feature",
-                         "geometry":  {
-                                          "type":  "MultiPolygon",
-                                          "coordinates":  [
-                                                              [
-                                                                  [
-                                                                      [
-                                                                          8.0815,
-                                                                          49.6577
-                                                                      ],
-                                                                      [
-                                                                          8.0798,
-                                                                          49.6583
-                                                                      ],
-                                                                      [
-                                                                          8.0732,
-                                                                          49.6614
-                                                                      ],
-                                                                      [
-                                                                          8.0759,
-                                                                          49.6647
-                                                                      ],
-                                                                      [
-                                                                          8.0931,
-                                                                          49.6666
-                                                                      ],
-                                                                      [
-                                                                          8.0935,
-                                                                          49.656
-                                                                      ],
-                                                                      [
-                                                                          8.0928,
-                                                                          49.6512
-                                                                      ],
-                                                                      [
-                                                                          8.0842,
-                                                                          49.6478
-                                                                      ],
-                                                                      [
-                                                                          8.0783,
-                                                                          49.6454
-                                                                      ],
-                                                                      [
-                                                                          8.0759,
-                                                                          49.6446
-                                                                      ],
-                                                                      [
-                                                                          8.0733,
-                                                                          49.6441
-                                                                      ],
-                                                                      [
-                                                                          8.064,
-                                                                          49.6432
-                                                                      ],
-                                                                      [
-                                                                          8.0651,
-                                                                          49.6491
-                                                                      ],
-                                                                      [
-                                                                          8.0844,
-                                                                          49.6558
-                                                                      ],
-                                                                      [
-                                                                          8.0815,
-                                                                          49.6577
-                                                                      ]
-                                                                  ]
-                                                              ]
-                                                          ]
-                                      },
-                         "properties":  {
-                                            "request":  {
-                                                            "query":  {
-                                                                          "mode":  "analyzer",
-                                                                          "lang":  "en"
-                                                                      },
-                                                            "file":  {
-                                                                         "name":  "20251214_204721.jpg",
-                                                                         "size":  2527466,
-                                                                         "type":  "image/jpeg"
-                                                                     }
-                                                        },
-                                            "response":  {
-                                                             "mode":  "analyzer",
-                                                             "wine":  {
-                                                                          "full_name":  "Steitz \u0026 Beck RosÃ© 2024 Edition",
-                                                                          "producer":  "Weingut Steitz \u0026 Beck",
-                                                                          "winery":  "Weingut Steitz \u0026 Beck",
-                                                                          "winery_description":  "Rheinhessen winery",
-                                                                          "region_name":  "Rheinhessen",
-                                                                          "country":  null,
-                                                                          "wine_type":  "RosÃ©",
-                                                                          "vintage":  "2024",
-                                                                          "grape_variety":  "Pinot Noir",
-                                                                          "average_price_usd":  15
-                                                                      },
-                                                             "sensory":  {
-                                                                             "aroma":  "Fresh strawberry, citrus",
-                                                                             "tasting_notes":  "Crisp, fruity, refreshing",
-                                                                             "food_pairing":  "Salads, seafood"
-                                                                         },
-                                                             "serving":  {
-                                                                             "temp_min_c":  8,
-                                                                             "temp_max_c":  10,
-                                                                             "decanting_minutes":  0
-                                                                         },
-                                                             "ratings":  {
-                                                                             "avg_rating":  null,
-                                                                             "reviews":  null,
-                                                                             "source":  null
-                                                                         },
-                                                             "debug":  {
-                                                                           "confidence":  null,
-                                                                           "selected_id":  "B-zivnxPKY",
-                                                                           "errors":  [
-
-                                                                                      ]
-                                                                       },
-                                                             "region_geojson":  null
-                                                         },
-                                            "error":  null
-                                        }
-                     }
-                 ]
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "MultiPolygon",
+        "coordinates": [
+          [
+            [
+              [
+                8.0815,
+                49.6577
+              ],
+              [
+                8.0798,
+                49.6583
+              ],
+              [
+                8.0732,
+                49.6614
+              ],
+              [
+                8.0759,
+                49.6647
+              ],
+              [
+                8.0931,
+                49.6666
+              ],
+              [
+                8.0935,
+                49.656
+              ],
+              [
+                8.0928,
+                49.6512
+              ],
+              [
+                8.0842,
+                49.6478
+              ],
+              [
+                8.0783,
+                49.6454
+              ],
+              [
+                8.0759,
+                49.6446
+              ],
+              [
+                8.0733,
+                49.6441
+              ],
+              [
+                8.064,
+                49.6432
+              ],
+              [
+                8.0651,
+                49.6491
+              ],
+              [
+                8.0844,
+                49.6558
+              ],
+              [
+                8.0815,
+                49.6577
+              ]
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "request": {
+          "query": {
+            "mode": "analyzer",
+            "lang": "en"
+          },
+          "file": {
+            "name": "20251214_204721.jpg",
+            "size": 2527466,
+            "type": "image/jpeg"
+          }
+        },
+        "response": {
+          "mode": "analyzer",
+          "wine": {
+            "full_name": "Steitz & Beck RosÃ© 2024 Edition",
+            "producer": "Weingut Steitz & Beck",
+            "winery": "Weingut Steitz & Beck",
+            "winery_description": "Rheinhessen winery",
+            "region_name": "Rheinhessen",
+            "country": null,
+            "wine_type": "RosÃ©",
+            "vintage": "2024",
+            "grape_variety": "Pinot Noir",
+            "average_price_usd": 15
+          },
+          "sensory": {
+            "aroma": "Fresh strawberry, citrus",
+            "tasting_notes": "Crisp, fruity, refreshing",
+            "food_pairing": "Salads, seafood"
+          },
+          "serving": {
+            "temp_min_c": 8,
+            "temp_max_c": 10,
+            "decanting_minutes": 0
+          },
+          "ratings": {
+            "avg_rating": null,
+            "reviews": null,
+            "source": null
+          },
+          "debug": {
+            "confidence": null,
+            "selected_id": "B-zivnxPKY",
+            "errors": []
+          }
+        },
+        "error": null
+      }
+    }
+  ]
 }

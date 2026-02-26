@@ -14,8 +14,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("home");
   const [stats, setStats] = useState<Stats>({ totalBottles: 0, activeRegions: 0, avgScore: 0 });
 
-  const fetchStats = () => {
+  const fetchStats = async () => {
     try {
+      await storage.syncBottlesFromFiles();
       const data = storage.getStats();
       setStats(data);
     } catch (err) {
@@ -24,11 +25,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchStats();
+    void fetchStats();
   }, []);
 
   useEffect(() => {
-    const handler = () => fetchStats();
+    const handler = () => { void fetchStats(); };
     window.addEventListener("winetrack:data-changed", handler);
     return () => window.removeEventListener("winetrack:data-changed", handler);
   }, []);
@@ -38,7 +39,7 @@ export default function App() {
       case "home":
         return <Dashboard stats={stats} onNavigate={setActiveTab} />;
       case "scan":
-        return <Scanner onComplete={() => { setActiveTab("bottles"); fetchStats(); }} />;
+        return <Scanner onComplete={() => { setActiveTab("bottles"); void fetchStats(); }} />;
       case "bottles":
         return <BottleList />;
       case "map":

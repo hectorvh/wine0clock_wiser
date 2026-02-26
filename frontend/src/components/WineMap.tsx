@@ -49,6 +49,7 @@ export default function WineMap() {
 
   const fetchData = async () => {
     try {
+      await storage.syncBottlesFromFiles();
       const aggData = storage.getAggregatedMap() as { production: AggregatedProd[]; consumption: AggregatedPoint[] };
       const nextGeoData = await storage.fetchRegionsGeoJSON() as GeoJSON.GeoJsonObject;
       setAggregatedData(aggData);

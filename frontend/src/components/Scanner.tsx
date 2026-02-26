@@ -3,7 +3,7 @@ import { X, AlertCircle, Loader2, Upload } from "lucide-react";
 import { ScanResult } from "../types";
 import storage from "../lib/storage";
 import { motion } from "motion/react";
-import { analyzeWine } from "../lib/wine-api";
+import { analyzeWine, type NormalizedWineResult } from "../lib/wine-api";
 
 interface ScannerProps {
   onComplete: () => void;
@@ -17,6 +17,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const [error, setError] = useState<string | null>(null);
   const [showManualPrompt, setShowManualPrompt] = useState(false);
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [analysisResult, setAnalysisResult] = useState<NormalizedWineResult | null>(null);
+  const [scanFileMeta, setScanFileMeta] = useState<{ name?: string; size?: number; type?: string } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -24,7 +26,6 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
   useEffect(() => {
     startCamera();
-    getCurrentLocation();
     return () => stopCamera();
   }, []);
 
@@ -59,6 +60,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
   };
 
   const capturePhoto = () => {
+    getCurrentLocation();
     if (videoRef.current && canvasRef.current) {
       const context = canvasRef.current.getContext("2d");
       if (context) {
@@ -78,6 +80,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
   };
 
   const handleFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    getCurrentLocation();
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -97,8 +100,10 @@ export default function Scanner({ onComplete }: ScannerProps) {
     setIsScanning(true);
     setError(null);
     setShowManualPrompt(false);
+    setScanFileMeta({ name: file.name, size: file.size, type: file.type });
     try {
       const result = await analyzeWine(file, "analyzer", "en");
+      setAnalysisResult(result);
       const vintageNum = result.wine.vintage ? Number.parseInt(result.wine.vintage, 10) : null;
       const country = (result.wine.country ?? "").toLowerCase();
       const isGerman = country.includes("germany") || country.includes("deutsch");
@@ -121,6 +126,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
   };
 
   const startManualEntry = () => {
+    getCurrentLocation();
+    setAnalysisResult(null);
+    setScanFileMeta(null);
     setScanResult({
       brand: "",
       producer: "",
@@ -136,12 +144,14 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
   const handleSave = async (formData: Record<string, unknown>) => {
     try {
-      storage.saveBottle({
+      await storage.saveBottle({
         ...formData,
         image: capturedImage || "",
         lat: location?.lat,
         lng: location?.lng,
         timestamp: new Date().toISOString(),
+        analysis_result: analysisResult,
+        scan_file: scanFileMeta,
       });
       onComplete();
     } catch {
@@ -294,7 +304,7 @@ function BottleForm({
   currentCoords,
 }: {
   initialData: ScanResult;
-  onSave: (data: Record<string, unknown>) => void;
+  onSave: (data: Record<string, unknown>) => Promise<void> | void;
   onCancel: () => void;
   currentCoords: { lat: number; lng: number } | null;
 }) {

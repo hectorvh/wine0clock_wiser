@@ -40,37 +40,21 @@ export interface NormalizedWineResult {
   region_geojson?: { type: "FeatureCollection"; features: unknown[] } | null;
 }
 
-const supabase = createClient(
-  import.meta.env.VITE_SUPABASE_URL as string,
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string,
-);
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string;
 
-const DEV_LOG_POST_URL =
-  (import.meta.env.VITE_LOG_POST_URL as string) || "http://localhost:3001/log-post";
-
-const MAX_FILE_BASE64_LOG = 500_000;
-
-async function fileToBase64(file: File): Promise<string | null> {
-  if (file.size > MAX_FILE_BASE64_LOG) return null;
-  return await new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve((reader.result as string).split(",")[1] ?? null);
-    reader.onerror = () => resolve(null);
-    reader.readAsDataURL(file);
-  });
+declare global {
+  interface Window {
+    __wineclock_supabase__?: ReturnType<typeof createClient>;
+  }
 }
 
-async function logPostInDev(endpoint: string, payload: unknown): Promise<void> {
-  if (!import.meta.env.DEV) return;
-  try {
-    await fetch(DEV_LOG_POST_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint, payload }),
-    });
-  } catch {
-    // silent in dev when log server is off
-  }
+const supabase =
+  (typeof window !== "undefined" && window.__wineclock_supabase__) ||
+  createClient(supabaseUrl, supabaseAnonKey);
+
+if (typeof window !== "undefined") {
+  window.__wineclock_supabase__ = supabase;
 }
 
 export async function analyzeWine(
@@ -86,16 +70,6 @@ export async function analyzeWine(
     `recognize-wine?${params.toString()}`,
     { body: formData },
   );
-
-  await logPostInDev("recognize-wine", {
-    request: {
-      query: { mode, lang },
-      file: { name: file.name, size: file.size, type: file.type },
-      file_base64: await fileToBase64(file),
-    },
-    response: data ?? null,
-    error: error ? { message: error.message } : data?.error ? { message: data.error } : undefined,
-  });
 
   if (error) throw new Error(error.message || "Analysis failed");
   if (data?.error) throw new Error(data.error);
