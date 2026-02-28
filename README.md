@@ -97,6 +97,60 @@ supabase functions serve
 
 **Summary:** Put frontend config in `.env` with `VITE_`; put Edge Function secrets in Supabase (Dashboard or `supabase secrets set`). Do not commit `.env` or real secrets to the repo.
 
+## PostGIS wine log persistence (no local GeoJSON by default)
+
+Wine analysis logs are now persisted to Supabase Postgres/PostGIS via UPSERT instead of writing `.geojson` files locally.
+
+### Required backend env vars
+
+Set these for the backend log server process:
+
+```env
+SUPABASE_URL="https://<project-ref>.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY="<service-role-key>"
+```
+
+Optional debug export (OFF by default):
+
+```env
+LOG_POST_DEBUG_EXPORT_GEOJSON="1"
+```
+
+When enabled, the backend also writes a local debug GeoJSON copy to `backend/post-requests/`.
+
+### Apply DB migration
+
+Run Supabase migration with:
+
+```sh
+cd backend
+supabase db push
+```
+
+Migration file:
+
+`backend/supabase/migrations/20260228160000_create_wine_logs.sql`
+
+### Verify inserts
+
+After running a scan, verify in SQL:
+
+```sql
+select id, user_id, observed_at, source_file_name
+from public.wine_logs
+order by created_at desc
+limit 20;
+```
+
+Map-ready flattened view:
+
+```sql
+select id, region, wine_type, year, score
+from public.wine_logs_map
+order by observed_at desc nulls last
+limit 20;
+```
+
 ## Creating a new Supabase Edge Function
 
 1. **Add the function folder and handler**  

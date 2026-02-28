@@ -1,7 +1,7 @@
 /**
- * Dev-only server: receives POST request/response payloads and writes GeoJSON
- * files to backend/post-requests/. When the wine analyzer response includes
- * region_name, fetches wine region geometry from WFS (BKG) and adds it to the file.
+ * Dev-only server: receives POST request/response payloads and persists wine logs
+ * to Supabase Postgres + PostGIS. Optional local GeoJSON export can be enabled
+ * for debugging via LOG_POST_DEBUG_EXPORT_GEOJSON=1.
  * Body: { endpoint?: string, payload?: { request?, response?, error? } }
  */
 import * as http from "node:http";
@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT_DIR = path.resolve(__dirname, "..");
 const PORT = Number(process.env.LOG_POST_PORT) || 3001;
 const POST_REQUESTS_DIR = path.join(__dirname, "post-requests");
 const POST_IMAGES_DIR = path.join(__dirname, "post_images");
@@ -21,6 +22,37 @@ const WFS_URL = "https://sgx.geodatenzentrum.de/wfs_dlm1000";
 const WFS_LAYER = "dlm1000:objart_43001_f";
 const WFS_TIMEOUT_MS = 15_000;
 const DEBUG_REGION_MATCH = process.env.DEBUG_REGION_MATCH === "1" || process.env.DEBUG_REGION_MATCH === "true";
+
+function loadEnvFromRoot(): void {
+  const envPath = path.join(ROOT_DIR, ".env");
+  let raw = "";
+  try {
+    raw = fs.readFileSync(envPath, "utf8");
+  } catch {
+    return;
+  }
+  raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#") && line.includes("="))
+    .forEach((line) => {
+      const eq = line.indexOf("=");
+      const key = line.slice(0, eq).trim();
+      const valueRaw = line.slice(eq + 1).trim();
+      if (!key || process.env[key] != null) return;
+      const unquoted =
+        (valueRaw.startsWith('"') && valueRaw.endsWith('"')) ||
+        (valueRaw.startsWith("'") && valueRaw.endsWith("'"))
+          ? valueRaw.slice(1, -1)
+          : valueRaw;
+      process.env[key] = unquoted;
+    });
+}
+
+loadEnvFromRoot();
+
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 // Request body sent by the frontend
 interface LogPostBody {
@@ -79,36 +111,13 @@ type RegionMatchResult = {
   features: WFSFeature[];
 };
 
-// helper used by the new /features endpoint
-function readAllGeoJSONFeatures(): { type: "FeatureCollection"; features: GeoJSONFeature[] } {
-  const collection: { type: "FeatureCollection"; features: GeoJSONFeature[] } = { type: "FeatureCollection", features: [] };
-  let files: string[] = [];
-  try {
-    files = fs
-      .readdirSync(POST_REQUESTS_DIR)
-      .filter((f) => f.toLowerCase().endsWith(".geojson"));
-  } catch {
-    return collection;
-  }
+type PersistInput = {
+  geojson: GeoJSONOutput;
+  sourceFileName: string | null;
+};
 
-  for (const file of files) {
-    try {
-      const raw = fs.readFileSync(path.join(POST_REQUESTS_DIR, file), "utf8");
-      const parsed = JSON.parse(raw) as { type?: string; features?: any[] };
-      if (parsed && parsed.type === "FeatureCollection" && Array.isArray(parsed.features)) {
-        // keep all features from the file, not just the first one
-        parsed.features.forEach((feat) => {
-          if (feat && typeof feat === "object") {
-            collection.features.push(feat as GeoJSONFeature);
-          }
-        });
-      }
-    } catch {
-      // ignore bad files
-    }
-  }
-  return collection;
-}
+// Local GeoJSON files are no longer the source of truth.
+// Optional debug file export is still supported via LOG_POST_DEBUG_EXPORT_GEOJSON.
 
 interface BottleView {
   id: number;
@@ -361,97 +370,6 @@ function withRegionMatchMetadata(response: unknown, match: RegionMatchResult): u
   };
 }
 
-function readBottlesFromGeoJSONFiles(): BottleView[] {
-  let files: string[] = [];
-  try {
-    files = fs
-      .readdirSync(POST_REQUESTS_DIR)
-      .filter((f) => f.toLowerCase().endsWith(".geojson"));
-  } catch {
-    return [];
-  }
-
-  const rows: Array<Omit<BottleView, "id">> = [];
-  for (const file of files) {
-    const filepath = path.join(POST_REQUESTS_DIR, file);
-    try {
-      const raw = fs.readFileSync(filepath, "utf8");
-      const parsed = JSON.parse(raw) as { features?: Array<{ properties?: Record<string, unknown> }> };
-      const feature = Array.isArray(parsed?.features) && parsed.features.length > 0 ? parsed.features[0] : null;
-      const properties = toObject(feature?.properties);
-      const manual = toObject(properties.manual);
-      const response = toObject(properties.response);
-      const wine = toObject(response.wine);
-      const sensory = toObject(response.sensory);
-      const request = toObject(properties.request);
-      const fileMeta = toObject(request.file);
-
-      const timestamp =
-        typeof manual.timestamp === "string"
-          ? manual.timestamp
-          : fs.statSync(filepath).mtime.toISOString();
-
-      let image = "";
-      if (typeof manual.image_path === "string" && manual.image_path.trim() !== "") {
-        image = manual.image_path;
-      } else if (typeof manual.image_data_url === "string") {
-        image = manual.image_data_url;
-      } else if (typeof properties.image_data_url === "string") {
-        image = properties.image_data_url;
-      } else if (typeof request.file_base64 === "string" && request.file_base64.length > 0) {
-        const mime = typeof fileMeta.type === "string" ? fileMeta.type : "image/jpeg";
-        image = `data:${mime};base64,${request.file_base64}`;
-      }
-
-      const country = typeof wine.country === "string" ? wine.country.toLowerCase() : "";
-      const vintage =
-        typeof wine.vintage === "string"
-          ? Number.parseInt(wine.vintage, 10)
-          : asNumber(manual.year, new Date().getFullYear());
-
-      rows.push({
-        file_name: file,
-        image,
-        brand:
-          (typeof manual.brand === "string" && manual.brand) ||
-          (typeof wine.full_name === "string" && wine.full_name) ||
-          (typeof fileMeta.name === "string" && fileMeta.name) ||
-          "Unknown",
-        producer:
-          (typeof manual.producer === "string" && manual.producer) ||
-          (typeof wine.producer === "string" && wine.producer) ||
-          (typeof wine.winery === "string" ? wine.winery : ""),
-        year: Number.isFinite(vintage) ? vintage : new Date().getFullYear(),
-        region:
-          (typeof manual.region === "string" && manual.region) ||
-          (typeof wine.region_name === "string" ? wine.region_name : ""),
-        wine_type:
-          (typeof manual.wine_type === "string" && manual.wine_type) ||
-          (typeof wine.wine_type === "string" ? wine.wine_type : ""),
-        timestamp,
-        lat: asNumber(manual.lat, 0),
-        lng: asNumber(manual.lng, 0),
-        city: typeof manual.city === "string" ? manual.city : "",
-        score: asNumber(manual.score, 0),
-        is_german:
-          typeof manual.is_german === "boolean"
-            ? manual.is_german
-            : country
-              ? country.includes("germany") || country.includes("deutsch")
-              : true,
-        notes:
-          (typeof manual.notes === "string" && manual.notes) ||
-          (typeof sensory.tasting_notes === "string" ? sensory.tasting_notes : ""),
-      });
-    } catch {
-      // ignore invalid/unexpected files
-    }
-  }
-
-  rows.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  return rows.map((row, idx) => ({ id: idx + 1, ...row }));
-}
-
 /**
  * Fetches wine region features from WFS (BKG). Filters veg === "1040" (wine).
  * If a region string is provided, filters by normalized properties.nam key.
@@ -576,20 +494,214 @@ function buildGeoJSON(payload: LogPayload | undefined, geometryOverride?: unknow
   };
 }
 
-function extractImageFilePathFromGeoJSON(geojsonPath: string): string | null {
+function hasSupabaseConfig(): boolean {
+  return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
+}
+
+async function callSupabaseRpc<T>(fnName: string, body: Record<string, unknown>): Promise<T> {
+  if (!hasSupabaseConfig()) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  }
+  const url = `${SUPABASE_URL.replace(/\/+$/, "")}/rest/v1/rpc/${fnName}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`RPC ${fnName} failed (${res.status}): ${text}`);
+  }
+  if (!text) return null as T;
+  return JSON.parse(text) as T;
+}
+
+async function callSupabaseRest<T>(pathWithQuery: string, init?: RequestInit): Promise<T> {
+  if (!hasSupabaseConfig()) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  }
+  const url = `${SUPABASE_URL.replace(/\/+$/, "")}/rest/v1/${pathWithQuery.replace(/^\/+/, "")}`;
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      ...(init?.headers ?? {}),
+    },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`REST ${pathWithQuery} failed (${res.status}): ${text}`);
+  }
+  if (!text) return null as T;
+  return JSON.parse(text) as T;
+}
+
+function toIsoTimestamp(value: unknown): string | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  const t = Date.parse(value);
+  if (!Number.isFinite(t)) return null;
+  return new Date(t).toISOString();
+}
+
+function normalizeErrorText(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") return value;
   try {
-    const raw = fs.readFileSync(geojsonPath, "utf8");
-    const parsed = JSON.parse(raw) as { features?: Array<{ properties?: Record<string, unknown> }> };
-    const feature = Array.isArray(parsed?.features) && parsed.features.length > 0 ? parsed.features[0] : null;
-    const properties = toObject(feature?.properties);
-    const manual = toObject(properties.manual);
-    const imagePath = typeof manual.image_path === "string" ? manual.image_path : "";
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function writeGeoJSONLocal(sourceFileName: string, geojson: GeoJSONOutput): void {
+  try {
+    fs.mkdirSync(POST_REQUESTS_DIR, { recursive: true });
+    const filepath = path.join(POST_REQUESTS_DIR, sourceFileName);
+    fs.writeFileSync(filepath, JSON.stringify(geojson, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[log-post-server] Failed local GeoJSON write", e);
+  }
+}
+
+async function persistWineLogToSupabase(input: PersistInput): Promise<{ id: number }> {
+  const feature = Array.isArray(input.geojson.features) && input.geojson.features.length > 0 ? input.geojson.features[0] : null;
+  if (!feature || typeof feature !== "object") {
+    throw new Error("persistWineLogToSupabase: missing feature");
+  }
+  const properties = toObject(feature.properties);
+  const userId = typeof properties.user_id === "string" && properties.user_id ? properties.user_id : DEV_USER_ID;
+  const manual = toObject(properties.manual);
+  if (manual.timestamp != null) {
+    manual.timestamp = toIsoTimestamp(manual.timestamp);
+  }
+
+  const rpcResp = await callSupabaseRpc<Array<{ id: number }>>("insert_wine_log_from_feature", {
+    p_user_id: userId,
+    p_request: properties.request ?? null,
+    p_response: properties.response ?? null,
+    p_manual: manual,
+    p_error: normalizeErrorText(properties.error),
+    p_geom_json: feature.geometry ?? null,
+  });
+  const row = Array.isArray(rpcResp) ? rpcResp[0] : null;
+  return {
+    id: row?.id ?? 0,
+  };
+}
+
+async function readAllGeoJSONFeaturesFromDb(): Promise<{ type: "FeatureCollection"; features: GeoJSONFeature[] }> {
+  if (!hasSupabaseConfig()) return { type: "FeatureCollection", features: [] };
+  try {
+    const resp = await callSupabaseRpc<{ type?: string; features?: GeoJSONFeature[] }>("get_wine_logs_feature_collection", {});
+    if (resp && resp.type === "FeatureCollection" && Array.isArray(resp.features)) {
+      return { type: "FeatureCollection", features: resp.features };
+    }
+  } catch (e) {
+    console.warn("[log-post-server] Failed to fetch features from Supabase", e);
+  }
+  return { type: "FeatureCollection", features: [] };
+}
+
+async function readBottlesFromDb(): Promise<BottleView[]> {
+  if (!hasSupabaseConfig()) return [];
+  type DbRow = {
+    id: number;
+    manual_timestamp: string | null;
+    created_at: string | null;
+    manual_brand: string | null;
+    manual_producer: string | null;
+    manual_year: number | null;
+    manual_region: string | null;
+    manual_wine_type: string | null;
+    manual_city: string | null;
+    manual_score: number | null;
+    manual_is_german: boolean | null;
+    manual_notes: string | null;
+    manual_lat: number | null;
+    manual_lng: number | null;
+    manual_image_path: string | null;
+    response_wine_full_name: string | null;
+    response_wine_producer: string | null;
+    response_wine_region_name: string | null;
+    response_wine_wine_type: string | null;
+    response_sensory_tasting_notes: string | null;
+  };
+
+  let rows: DbRow[] = [];
+  try {
+    rows = await callSupabaseRest<DbRow[]>(
+      "wine_logs?select=id,manual_timestamp,created_at,manual_brand,manual_producer,manual_year,manual_region,manual_wine_type,manual_city,manual_score,manual_is_german,manual_notes,manual_lat,manual_lng,manual_image_path,response_wine_full_name,response_wine_producer,response_wine_region_name,response_wine_wine_type,response_sensory_tasting_notes&order=manual_timestamp.desc.nullslast,created_at.desc"
+    );
+  } catch (e) {
+    console.warn("[log-post-server] Failed to fetch bottles from Supabase", e);
+    return [];
+  }
+
+  return rows.map((row, idx) => {
+    return {
+      id: idx + 1,
+      file_name: `wine-log-db-${row.id}.geojson`,
+      image: row.manual_image_path ?? "",
+      brand: row.manual_brand || row.response_wine_full_name || "Unknown",
+      producer: row.manual_producer || row.response_wine_producer || "",
+      year: Number.isFinite(row.manual_year) ? row.manual_year as number : new Date().getFullYear(),
+      region: row.manual_region || row.response_wine_region_name || "",
+      wine_type: row.manual_wine_type || row.response_wine_wine_type || "",
+      timestamp: row.manual_timestamp ?? row.created_at ?? new Date().toISOString(),
+      lat: asNumber(row.manual_lat, 0),
+      lng: asNumber(row.manual_lng, 0),
+      city: row.manual_city ?? "",
+      score: asNumber(row.manual_score, 0),
+      is_german: typeof row.manual_is_german === "boolean" ? row.manual_is_german : true,
+      notes: row.manual_notes || row.response_sensory_tasting_notes || "",
+    };
+  });
+}
+
+function parseDbIdFromFileName(sourceFileName: string): number | null {
+  const m = /^wine-log-db-(\d+)\.geojson$/i.exec(sourceFileName.trim());
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isFinite(id) ? id : null;
+}
+
+async function getImagePathBySourceFileName(sourceFileName: string): Promise<string | null> {
+  if (!hasSupabaseConfig()) return null;
+  const id = parseDbIdFromFileName(sourceFileName);
+  if (!id) return null;
+  type DbRow = { manual_image_path: string | null };
+  try {
+    const rows = await callSupabaseRest<DbRow[]>(
+      `wine_logs?select=manual_image_path&id=eq.${id}&limit=1`
+    );
+    const imagePath = rows?.[0]?.manual_image_path ?? "";
     if (!imagePath.startsWith("/post-images/")) return null;
     const imageName = path.basename(imagePath);
-    if (!imageName) return null;
-    return path.join(POST_IMAGES_DIR, imageName);
+    return imageName ? path.join(POST_IMAGES_DIR, imageName) : null;
   } catch {
     return null;
+  }
+}
+
+async function deleteWineLogBySourceFileName(sourceFileName: string): Promise<boolean> {
+  if (!hasSupabaseConfig()) return false;
+  const id = parseDbIdFromFileName(sourceFileName);
+  if (!id) return false;
+  try {
+    await callSupabaseRest<unknown>(
+      `wine_logs?id=eq.${id}`,
+      { method: "DELETE", headers: { Prefer: "return=minimal" } }
+    );
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -605,7 +717,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   }
 
   if (req.method === "GET" && req.url === "/bottles") {
-    const bottles = readBottlesFromGeoJSONFiles();
+    const bottles = await readBottlesFromDb();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(bottles));
     return;
@@ -614,7 +726,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   // new endpoint returns all features (geometry + properties) collected
   // from the GeoJSON files.  useful so the frontend can render the polygons
   if (req.method === "GET" && req.url === "/features") {
-    const features = readAllGeoJSONFeatures();
+    const features = await readAllGeoJSONFeaturesFromDb();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(features));
     return;
@@ -729,30 +841,23 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
       features,
     };
 
+    let filename = "";
+    let warning: string | null = null;
     try {
-      fs.mkdirSync(POST_REQUESTS_DIR, { recursive: true });
-    } catch {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Failed to create post-requests dir" }));
-      return;
+      const persisted = await persistWineLogToSupabase({ geojson, sourceFileName: null });
+      filename = `wine-log-db-${persisted.id}.geojson`;
+    } catch (e) {
+      // keep a deterministic filename even if DB write fails
+      const fallbackTs = new Date().toISOString().replace(/[:.]/g, "-");
+      filename = `wine-log_${fallbackTs}.geojson`;
+      warning = e instanceof Error ? e.message : "Failed to persist wine log";
+      console.warn("[log-post-server] save-bottle persistence warning", e);
     }
+    writeGeoJSONLocal(filename, geojson);
 
-    const safeName = (data.endpoint || "bottle-log").replace(/[^a-z0-9-_]/gi, "_");
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `${safeName}_${timestamp}.geojson`;
-    const filepath = path.join(POST_REQUESTS_DIR, filename);
-
-    try {
-      fs.writeFileSync(filepath, JSON.stringify(geojson, null, 2), "utf8");
-    } catch {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Failed to write file" }));
-      return;
-    }
-
-    const bottles = readBottlesFromGeoJSONFiles();
+    const bottles = await readBottlesFromDb();
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, file: filename, bottle: bottles[0] ?? null }));
+    res.end(JSON.stringify({ ok: true, file: filename, bottle: bottles[0] ?? null, warning }));
     return;
   }
 
@@ -783,14 +888,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
       return;
     }
 
-    const geojsonPath = path.join(POST_REQUESTS_DIR, fileName);
-    if (!geojsonPath.startsWith(POST_REQUESTS_DIR)) {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid file_name" }));
-      return;
-    }
-
-    const imagePath = extractImageFilePathFromGeoJSON(geojsonPath);
+    const imagePath = await getImagePathBySourceFileName(fileName);
     let imageDeleted = false;
     if (imagePath && imagePath.startsWith(POST_IMAGES_DIR)) {
       try {
@@ -801,11 +899,10 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
       }
     }
 
-    try {
-      fs.unlinkSync(geojsonPath);
-    } catch {
+    const deleted = await deleteWineLogBySourceFileName(fileName);
+    if (!deleted) {
       res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "GeoJSON file not found" }));
+      res.end(JSON.stringify({ error: "Wine log not found" }));
       return;
     }
 
@@ -847,31 +944,32 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   const responseOverride = withRegionMatchMetadata(payload?.response ?? null, wfsResult);
   const geojson = buildGeoJSON(payload, mergedGeometry ?? undefined, responseOverride);
 
+  let filename = "";
+  let warning: string | null = null;
   try {
-    fs.mkdirSync(POST_REQUESTS_DIR, { recursive: true });
-  } catch {
-    res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Failed to create post-requests dir" }));
-    return;
+    const persisted = await persistWineLogToSupabase({ geojson, sourceFileName: null });
+    filename = `wine-log-db-${persisted.id}.geojson`;
+  } catch (e) {
+    const fallbackTs = new Date().toISOString().replace(/[:.]/g, "-");
+    filename = `wine-log_${fallbackTs}.geojson`;
+    warning = e instanceof Error ? e.message : "Failed to persist wine log";
+    console.warn("[log-post-server] log-post persistence warning", e);
   }
-
-  const safeName = (data.endpoint || "post").replace(/[^a-z0-9-_]/gi, "_");
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `${safeName}_${timestamp}.geojson`;
-  const filepath = path.join(POST_REQUESTS_DIR, filename);
-
-  try {
-    fs.writeFileSync(filepath, JSON.stringify(geojson, null, 2), "utf8");
-  } catch {
-    res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Failed to write file" }));
-    return;
-  }
+  writeGeoJSONLocal(filename, geojson);
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ ok: true, file: filename }));
+  res.end(JSON.stringify({ ok: true, file: filename, warning }));
+});
+
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err?.code === "EADDRINUSE") {
+    console.warn(`[log-post-server] Port ${PORT} already in use. Reusing existing server instance.`);
+    // Exit successfully so concurrent dev scripts keep running frontend.
+    process.exit(0);
+  }
+  throw err;
 });
 
 server.listen(PORT, () => {
-  console.log(`[log-post-server] POST http://localhost:${PORT}/log-post → ${POST_REQUESTS_DIR}`);
+  console.log(`[log-post-server] POST http://localhost:${PORT}/log-post → Supabase/PostGIS`);
 });
