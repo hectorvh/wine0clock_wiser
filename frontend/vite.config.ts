@@ -10,7 +10,7 @@ export default defineConfig({
   envDir: path.resolve(__dirname, ".."),
   server: {
     host: "::",
-    port: 8080,
+    port: 8000,
     hmr: {
       overlay: false,
     },
