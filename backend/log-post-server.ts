@@ -8,6 +8,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -115,6 +116,8 @@ type PersistInput = {
   geojson: GeoJSONOutput;
   sourceFileName: string | null;
 };
+
+type ParsedImage = { mime: string; buffer: Buffer; extension: string };
 
 // Local GeoJSON files are no longer the source of truth.
 // Optional debug file export is still supported via LOG_POST_DEBUG_EXPORT_GEOJSON.
@@ -543,6 +546,118 @@ async function callSupabaseRest<T>(pathWithQuery: string, init?: RequestInit): P
   return JSON.parse(text) as T;
 }
 
+function encodeStorageObjectPath(objectPath: string): string {
+  return objectPath
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
+async function uploadImageToSupabaseStorage(logId: number, image: ParsedImage): Promise<{
+  bucket: string;
+  objectPath: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  uploadedAt: string;
+}> {
+  if (!hasSupabaseConfig()) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  }
+  const bucket = "wine_labels";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const objectPath = `logs/${logId}/${timestamp}.${image.extension}`;
+  const encodedPath = encodeStorageObjectPath(objectPath);
+  const url = `${SUPABASE_URL.replace(/\/+$/, "")}/storage/v1/object/${bucket}/${encodedPath}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "Content-Type": image.mime,
+      "x-upsert": "true",
+    },
+    body: new Blob([Uint8Array.from(image.buffer)], { type: image.mime }),
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Storage upload failed (${res.status}): ${text}`);
+  }
+
+  return {
+    bucket,
+    objectPath,
+    mime: image.mime,
+    size: image.buffer.length,
+    sha256: createHash("sha256").update(image.buffer).digest("hex"),
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
+async function updateWineLogImageMetadata(
+  logId: number,
+  meta: { bucket: string; objectPath: string; mime: string; size: number; sha256: string; uploadedAt: string }
+): Promise<void> {
+  await callSupabaseRest<unknown>(
+    `wine_logs?id=eq.${logId}`,
+    {
+      method: "PATCH",
+      headers: {
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({
+        image_bucket: meta.bucket,
+        image_path: meta.objectPath,
+        image_mime: meta.mime,
+        image_size: meta.size,
+        image_sha256: meta.sha256,
+        image_uploaded_at: meta.uploadedAt,
+      }),
+    }
+  );
+}
+
+async function createSignedImageUrl(bucket: string, objectPath: string, expiresIn = 3600): Promise<string | null> {
+  if (!bucket || !objectPath) return null;
+  const encodedPath = encodeStorageObjectPath(objectPath);
+  const endpoint = `${SUPABASE_URL.replace(/\/+$/, "")}/storage/v1/object/sign/${bucket}/${encodedPath}`;
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+    body: JSON.stringify({ expiresIn }),
+  });
+  const text = await res.text();
+  if (!res.ok) return null;
+  if (!text) return null;
+  const parsed = JSON.parse(text) as { signedURL?: string };
+  const signedURL = parsed?.signedURL;
+  if (!signedURL) return null;
+  if (/^https?:\/\//i.test(signedURL)) return signedURL;
+  if (signedURL.startsWith("/object/")) return `${SUPABASE_URL.replace(/\/+$/, "")}/storage/v1${signedURL}`;
+  if (signedURL.startsWith("/")) return `${SUPABASE_URL.replace(/\/+$/, "")}${signedURL}`;
+  return `${SUPABASE_URL.replace(/\/+$/, "")}/storage/v1/${signedURL}`;
+}
+
+async function deleteStorageObject(bucket: string, objectPath: string): Promise<void> {
+  if (!bucket || !objectPath) return;
+  const encodedPath = encodeStorageObjectPath(objectPath);
+  const url = `${SUPABASE_URL.replace(/\/+$/, "")}/storage/v1/object/${bucket}/${encodedPath}`;
+  await fetch(url, {
+    method: "DELETE",
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+  });
+}
+
 function toIsoTimestamp(value: unknown): string | null {
   if (typeof value !== "string" || value.trim() === "") return null;
   const t = Date.parse(value);
@@ -632,23 +747,28 @@ async function readBottlesFromDb(): Promise<BottleView[]> {
     response_wine_region_name: string | null;
     response_wine_wine_type: string | null;
     response_sensory_tasting_notes: string | null;
+    image_bucket: string | null;
+    image_path: string | null;
   };
 
   let rows: DbRow[] = [];
   try {
     rows = await callSupabaseRest<DbRow[]>(
-      "wine_logs?select=id,manual_timestamp,created_at,manual_brand,manual_producer,manual_year,manual_region,manual_wine_type,manual_city,manual_score,manual_is_german,manual_notes,manual_lat,manual_lng,manual_image_path,response_wine_full_name,response_wine_producer,response_wine_region_name,response_wine_wine_type,response_sensory_tasting_notes&order=manual_timestamp.desc.nullslast,created_at.desc"
+      "wine_logs?select=id,manual_timestamp,created_at,manual_brand,manual_producer,manual_year,manual_region,manual_wine_type,manual_city,manual_score,manual_is_german,manual_notes,manual_lat,manual_lng,manual_image_path,response_wine_full_name,response_wine_producer,response_wine_region_name,response_wine_wine_type,response_sensory_tasting_notes,image_bucket,image_path&order=manual_timestamp.desc.nullslast,created_at.desc"
     );
   } catch (e) {
     console.warn("[log-post-server] Failed to fetch bottles from Supabase", e);
     return [];
   }
 
-  return rows.map((row, idx) => {
+  const mapped = await Promise.all(rows.map(async (row, idx) => {
+    const signedImage = row.image_bucket && row.image_path
+      ? await createSignedImageUrl(row.image_bucket, row.image_path)
+      : null;
     return {
       id: idx + 1,
       file_name: `wine-log-db-${row.id}.geojson`,
-      image: row.manual_image_path ?? "",
+      image: signedImage || row.manual_image_path || "",
       brand: row.manual_brand || row.response_wine_full_name || "Unknown",
       producer: row.manual_producer || row.response_wine_producer || "",
       year: Number.isFinite(row.manual_year) ? row.manual_year as number : new Date().getFullYear(),
@@ -662,7 +782,8 @@ async function readBottlesFromDb(): Promise<BottleView[]> {
       is_german: typeof row.manual_is_german === "boolean" ? row.manual_is_german : true,
       notes: row.manual_notes || row.response_sensory_tasting_notes || "",
     };
-  });
+  }));
+  return mapped;
 }
 
 function parseDbIdFromFileName(sourceFileName: string): number | null {
@@ -676,11 +797,16 @@ async function getImagePathBySourceFileName(sourceFileName: string): Promise<str
   if (!hasSupabaseConfig()) return null;
   const id = parseDbIdFromFileName(sourceFileName);
   if (!id) return null;
-  type DbRow = { manual_image_path: string | null };
+  type DbRow = { manual_image_path: string | null; image_bucket: string | null; image_path: string | null };
   try {
     const rows = await callSupabaseRest<DbRow[]>(
-      `wine_logs?select=manual_image_path&id=eq.${id}&limit=1`
+      `wine_logs?select=manual_image_path,image_bucket,image_path&id=eq.${id}&limit=1`
     );
+    const bucket = rows?.[0]?.image_bucket ?? "";
+    const objectPath = rows?.[0]?.image_path ?? "";
+    if (bucket && objectPath) {
+      await deleteStorageObject(bucket, objectPath);
+    }
     const imagePath = rows?.[0]?.manual_image_path ?? "";
     if (!imagePath.startsWith("/post-images/")) return null;
     const imageName = path.basename(imagePath);
@@ -794,6 +920,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const wfsResult = await fetchWineRegionsFromWFS(regionName);
     const mergedGeometry = buildMultiPolygonGeometryFromWFSFeatures(wfsResult.features);
     const sanitizedAnalysis = stripRegionGeoJSON(withRegionMatchMetadata(analysis, wfsResult));
+    const parsedUploadImage = typeof bottle.image === "string" ? parseDataUrlImage(bottle.image) : null;
     const imagePath = saveImageDataUrl(bottle.image, data.endpoint || "wine-log");
     const bottleRegionSplit = splitRegionCountry(bottle.region);
     const analysisWine = toObject(toObject(sanitizedAnalysis).wine);
@@ -846,6 +973,16 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     try {
       const persisted = await persistWineLogToSupabase({ geojson, sourceFileName: null });
       filename = `wine-log-db-${persisted.id}.geojson`;
+      if (parsedUploadImage) {
+        try {
+          const uploaded = await uploadImageToSupabaseStorage(persisted.id, parsedUploadImage);
+          await updateWineLogImageMetadata(persisted.id, uploaded);
+        } catch (uploadErr) {
+          const uploadMsg = uploadErr instanceof Error ? uploadErr.message : "Image upload failed";
+          warning = warning ? `${warning}; ${uploadMsg}` : uploadMsg;
+          console.warn("[log-post-server] save-bottle image upload warning", uploadErr);
+        }
+      }
     } catch (e) {
       // keep a deterministic filename even if DB write fails
       const fallbackTs = new Date().toISOString().replace(/[:.]/g, "-");

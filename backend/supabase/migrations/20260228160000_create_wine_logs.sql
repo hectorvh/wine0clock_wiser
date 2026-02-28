@@ -71,6 +71,12 @@ create table if not exists public.wine_logs (
   manual_image_data_url text,
   manual_timestamp timestamptz,
   error_text text,
+  image_bucket text default 'wine_labels',
+  image_path text,
+  image_mime text,
+  image_size integer,
+  image_sha256 text,
+  image_uploaded_at timestamptz default now(),
   geom geometry(MultiPolygon, 4326) not null,
   created_at timestamptz not null default now()
 );
@@ -78,6 +84,14 @@ create table if not exists public.wine_logs (
 create index if not exists idx_wine_logs_geom on public.wine_logs using gist (geom);
 create index if not exists idx_wine_logs_user_id on public.wine_logs (user_id);
 create index if not exists idx_wine_logs_origin_region_key on public.wine_logs (response_wine_region_key);
+
+alter table public.wine_logs
+  add column if not exists image_bucket text default 'wine_labels',
+  add column if not exists image_path text,
+  add column if not exists image_mime text,
+  add column if not exists image_size integer,
+  add column if not exists image_sha256 text,
+  add column if not exists image_uploaded_at timestamptz default now();
 
 create or replace function public.insert_wine_log_from_feature(
   p_user_id text,
@@ -301,6 +315,12 @@ as $$
               )
             ),
             'error', error_text,
+            'image_bucket', image_bucket,
+            'image_path', image_path,
+            'image_mime', image_mime,
+            'image_size', image_size,
+            'image_sha256', image_sha256,
+            'image_uploaded_at', image_uploaded_at,
             'manual', jsonb_build_object(
               'brand', manual_brand,
               'producer', manual_producer,
