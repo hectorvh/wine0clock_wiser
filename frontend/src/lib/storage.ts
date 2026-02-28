@@ -46,6 +46,22 @@ async function fetchWithTimeout(url: string): Promise<Response> {
   }
 }
 
+// helper that calls the dev log server and returns whatever GeoJSON feature
+// collection it has already written.  this mirrors the /features endpoint we
+// added in backend/log-post-server.ts.
+async function fetchLoggedFeatures(): Promise<GeoJSON.GeoJsonObject> {
+  for (const base of getLogServerBases()) {
+    try {
+      const res = await fetchWithTimeout(`${base}/features`);
+      if (!res.ok) continue;
+      return await res.json();
+    } catch {
+      /* ignore */
+    }
+  }
+  return { type: "FeatureCollection", features: [] };
+}
+
 function saveBottles(bottles: Bottle[], emitEvent = true) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(bottles));
   const nextId = bottles.length > 0 ? Math.max(...bottles.map((b) => b.id)) + 1 : 1;
@@ -261,6 +277,7 @@ export async function fetchRegionsGeoJSON(): Promise<unknown> {
 
 export default {
   syncBottlesFromFiles,
+  fetchLoggedFeatures,
   getAllBottles,
   saveBottle,
   updateBottle,

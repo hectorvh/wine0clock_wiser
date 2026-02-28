@@ -51,6 +51,37 @@ interface GeoJSONOutput {
   features: GeoJSONFeature[];
 }
 
+// helper used by the new /features endpoint
+function readAllGeoJSONFeatures(): { type: "FeatureCollection"; features: GeoJSONFeature[] } {
+  const collection: { type: "FeatureCollection"; features: GeoJSONFeature[] } = { type: "FeatureCollection", features: [] };
+  let files: string[] = [];
+  try {
+    files = fs
+      .readdirSync(POST_REQUESTS_DIR)
+      .filter((f) => f.toLowerCase().endsWith(".geojson"));
+  } catch {
+    return collection;
+  }
+
+  for (const file of files) {
+    try {
+      const raw = fs.readFileSync(path.join(POST_REQUESTS_DIR, file), "utf8");
+      const parsed = JSON.parse(raw) as { type?: string; features?: any[] };
+      if (parsed && parsed.type === "FeatureCollection" && Array.isArray(parsed.features)) {
+        // keep all features from the file, not just the first one
+        parsed.features.forEach((feat) => {
+          if (feat && typeof feat === "object") {
+            collection.features.push(feat as GeoJSONFeature);
+          }
+        });
+      }
+    } catch {
+      // ignore bad files
+    }
+  }
+  return collection;
+}
+
 interface BottleView {
   id: number;
   file_name: string;
@@ -282,32 +313,43 @@ async function fetchWineRegionsFromWFS(regionName?: string | null): Promise<Arra
 }
 
 function buildGeoJSON(payload: LogPayload | undefined, geometryOverride: unknown | null = null): GeoJSONOutput {
-  let geometry: unknown = geometryOverride;
-  if (geometry === undefined || geometry === null) {
+  // geometryOverride may be null, a single geometry, or an array of geometries.
+  // if no override is provided we look at payload.response.region_geojson
+  const props = {
+    user_id: DEV_USER_ID,
+    request: stripFileBase64FromRequest(payload?.request ?? null),
+    response: stripRegionGeoJSON(payload?.response ?? null),
+    error: payload?.error ?? null,
+  };
+
+  const collectGeoms = (): unknown[] => {
+    if (geometryOverride !== undefined && geometryOverride !== null) {
+      if (Array.isArray(geometryOverride)) return geometryOverride;
+      return [geometryOverride];
+    }
+    // fallback to payload region_geojson
     const regionGeo = payload?.response?.region_geojson;
-    const hasFeatures =
-      regionGeo != null &&
+    if (
+      regionGeo &&
       typeof regionGeo === "object" &&
       regionGeo.type === "FeatureCollection" &&
-      Array.isArray(regionGeo.features);
-    const features = hasFeatures && regionGeo?.features ? regionGeo.features : [];
-    geometry = features.length > 0 && features[0].geometry != null ? features[0].geometry : null;
-  }
+      Array.isArray(regionGeo.features)
+    ) {
+      return regionGeo.features.map((f) => f.geometry ?? null);
+    }
+    return [null];
+  };
+
+  const geometries = collectGeoms();
+  const features: GeoJSONFeature[] = geometries.map((geom) => ({
+    type: "Feature",
+    geometry: geom ?? null,
+    properties: props,
+  }));
 
   return {
     type: "FeatureCollection",
-    features: [
-      {
-        type: "Feature",
-        geometry,
-        properties: {
-          user_id: DEV_USER_ID,
-          request: stripFileBase64FromRequest(payload?.request ?? null),
-          response: stripRegionGeoJSON(payload?.response ?? null),
-          error: payload?.error ?? null,
-        },
-      },
-    ],
+    features,
   };
 }
 
@@ -343,6 +385,15 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const bottles = readBottlesFromGeoJSONFiles();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(bottles));
+    return;
+  }
+
+  // new endpoint returns all features (geometry + properties) collected
+  // from the GeoJSON files.  useful so the frontend can render the polygons
+  if (req.method === "GET" && req.url === "/features") {
+    const features = readAllGeoJSONFeatures();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(features));
     return;
   }
 
@@ -406,44 +457,53 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const wineObj = toObject(analysisObj.wine);
     const regionName = typeof wineObj.region_name === "string" ? wineObj.region_name : null;
     const wfsFeatures = await fetchWineRegionsFromWFS(regionName);
-    const geometry = wfsFeatures.length > 0 && wfsFeatures[0].geometry != null ? wfsFeatures[0].geometry : null;
+    // collect all geometries returned by WFS (could be multiple polygons)
+    const geomArray = wfsFeatures
+      .map((f) => f.geometry)
+      .filter((g) => g != null);
     const sanitizedAnalysis = stripRegionGeoJSON(analysis);
     const imagePath = saveImageDataUrl(bottle.image, data.endpoint || "wine-log");
 
+    // when saving manually we construct features ourselves because we
+    // also want to embed the manual metadata (brand/producer/etc). each
+    // geometry returned from WFS becomes its own feature with identical
+    // properties.
+    const manualProps = {
+      brand: bottle.brand ?? null,
+      producer: bottle.producer ?? null,
+      year: bottle.year ?? null,
+      region: bottle.region ?? null,
+      wine_type: bottle.wine_type ?? null,
+      is_german: bottle.is_german ?? true,
+      city: bottle.city ?? null,
+      score: bottle.score ?? null,
+      notes: bottle.notes ?? null,
+      lat: bottle.lat ?? null,
+      lng: bottle.lng ?? null,
+      image_path: imagePath,
+      image_data_url: null,
+      timestamp: new Date().toISOString(),
+    };
+
+    const baseProps = {
+      user_id: DEV_USER_ID,
+      request: {
+        query: { mode: "analyzer", lang: "en" },
+        file: data.scan_file ?? null,
+        file_base64: null,
+      },
+      response: sanitizedAnalysis,
+      error: null,
+      manual: manualProps,
+    };
+
+    const features: GeoJSONFeature[] = geomArray.length
+      ? geomArray.map((g) => ({ type: "Feature", geometry: g, properties: baseProps }))
+      : [{ type: "Feature", geometry: null, properties: baseProps }];
+
     const geojson: GeoJSONOutput = {
       type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          geometry,
-          properties: {
-            user_id: DEV_USER_ID,
-            request: {
-              query: { mode: "analyzer", lang: "en" },
-              file: data.scan_file ?? null,
-              file_base64: null,
-            },
-            response: sanitizedAnalysis,
-            error: null,
-            manual: {
-              brand: bottle.brand ?? null,
-              producer: bottle.producer ?? null,
-              year: bottle.year ?? null,
-              region: bottle.region ?? null,
-              wine_type: bottle.wine_type ?? null,
-              is_german: bottle.is_german ?? true,
-              city: bottle.city ?? null,
-              score: bottle.score ?? null,
-              notes: bottle.notes ?? null,
-              lat: bottle.lat ?? null,
-              lng: bottle.lng ?? null,
-              image_path: imagePath,
-              image_data_url: null,
-              timestamp: new Date().toISOString(),
-            },
-          },
-        },
-      ],
+      features,
     };
 
     try {
@@ -558,9 +618,8 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   const payload = data.payload;
   const regionName = payload?.response?.wine?.region_name ?? null;
   const wfsFeatures = await fetchWineRegionsFromWFS(regionName);
-  const wfsGeometry =
-    wfsFeatures.length > 0 && wfsFeatures[0].geometry != null ? wfsFeatures[0].geometry : null;
-  const geojson = buildGeoJSON(payload, wfsGeometry);
+  const geomArray = wfsFeatures.map((f) => f.geometry).filter((g) => g != null);
+  const geojson = buildGeoJSON(payload, geomArray.length > 0 ? geomArray : null);
 
   try {
     fs.mkdirSync(POST_REQUESTS_DIR, { recursive: true });
