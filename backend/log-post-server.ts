@@ -273,12 +273,43 @@ async function fetchWineRegionsFromWFS(regionName?: string | null): Promise<Arra
     const features = Array.isArray(geojson?.features) ? geojson.features : [];
     let filtered = features.filter((f) => f?.properties?.veg === "1040");
     const name = String(regionName).trim();
-    if (name) filtered = filtered.filter((f) => f?.properties?.nam === name);
+    if (name) {
+      const nameNorm = name.toLowerCase();
+      filtered = filtered.filter((f) => {
+        const nam = f?.properties?.nam;
+        if (typeof nam !== "string" || nam.trim() === "") return false;
+        return nameNorm.includes(nam.trim().toLowerCase());
+      });
+    }
     return filtered;
   } catch {
     clearTimeout(timeout);
     return [];
   }
+}
+
+function buildMultiPolygonGeometryFromWFSFeatures(
+  features: Array<{ geometry?: unknown }>,
+): { type: "MultiPolygon"; coordinates: unknown[] } | null {
+  const multiPolygonCoords: unknown[] = [];
+  for (const feature of features) {
+    const geometry = feature?.geometry as { type?: string; coordinates?: unknown } | undefined;
+    if (!geometry || geometry.coordinates == null) continue;
+
+    if (geometry.type === "Polygon" && Array.isArray(geometry.coordinates)) {
+      multiPolygonCoords.push(geometry.coordinates);
+      continue;
+    }
+
+    if (geometry.type === "MultiPolygon" && Array.isArray(geometry.coordinates)) {
+      for (const polygonCoords of geometry.coordinates as unknown[]) {
+        multiPolygonCoords.push(polygonCoords);
+      }
+    }
+  }
+
+  if (multiPolygonCoords.length === 0) return null;
+  return { type: "MultiPolygon", coordinates: multiPolygonCoords };
 }
 
 function buildGeoJSON(payload: LogPayload | undefined, geometryOverride: unknown | null = null): GeoJSONOutput {
@@ -406,7 +437,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const wineObj = toObject(analysisObj.wine);
     const regionName = typeof wineObj.region_name === "string" ? wineObj.region_name : null;
     const wfsFeatures = await fetchWineRegionsFromWFS(regionName);
-    const geometry = wfsFeatures.length > 0 && wfsFeatures[0].geometry != null ? wfsFeatures[0].geometry : null;
+    const geometry = buildMultiPolygonGeometryFromWFSFeatures(wfsFeatures);
     const sanitizedAnalysis = stripRegionGeoJSON(analysis);
     const imagePath = saveImageDataUrl(bottle.image, data.endpoint || "wine-log");
 
@@ -558,8 +589,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   const payload = data.payload;
   const regionName = payload?.response?.wine?.region_name ?? null;
   const wfsFeatures = await fetchWineRegionsFromWFS(regionName);
-  const wfsGeometry =
-    wfsFeatures.length > 0 && wfsFeatures[0].geometry != null ? wfsFeatures[0].geometry : null;
+  const wfsGeometry = buildMultiPolygonGeometryFromWFSFeatures(wfsFeatures);
   const geojson = buildGeoJSON(payload, wfsGeometry);
 
   try {
