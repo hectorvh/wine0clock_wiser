@@ -20,6 +20,7 @@ const DEV_USER_ID = process.env.LOG_POST_DEV_USER_ID || "admin-dev";
 const WFS_URL = "https://sgx.geodatenzentrum.de/wfs_dlm1000";
 const WFS_LAYER = "dlm1000:objart_43001_f";
 const WFS_TIMEOUT_MS = 15_000;
+const DEBUG_REGION_MATCH = process.env.DEBUG_REGION_MATCH === "1" || process.env.DEBUG_REGION_MATCH === "true";
 
 // Request body sent by the frontend
 interface LogPostBody {
@@ -49,6 +50,64 @@ interface GeoJSONFeature {
 interface GeoJSONOutput {
   type: "FeatureCollection";
   features: GeoJSONFeature[];
+}
+
+type WFSFeatureProperties = {
+  veg?: string;
+  nam?: string;
+  region_display?: string | null;
+  region_key?: string;
+  wfs_nam_display?: string | null;
+  wfs_nam_key?: string;
+} & Record<string, unknown>;
+
+type WFSFeature = {
+  geometry?: unknown;
+  properties?: WFSFeatureProperties;
+};
+
+type RegionNamePair = {
+  wfs_nam_display: string;
+  wfs_nam_key: string;
+};
+
+type RegionMatchResult = {
+  apiRegionString: string | null;
+  apiKey: string;
+  candidates: RegionNamePair[];
+  matchedNames: RegionNamePair[];
+  features: WFSFeature[];
+};
+
+// helper used by the new /features endpoint
+function readAllGeoJSONFeatures(): { type: "FeatureCollection"; features: GeoJSONFeature[] } {
+  const collection: { type: "FeatureCollection"; features: GeoJSONFeature[] } = { type: "FeatureCollection", features: [] };
+  let files: string[] = [];
+  try {
+    files = fs
+      .readdirSync(POST_REQUESTS_DIR)
+      .filter((f) => f.toLowerCase().endsWith(".geojson"));
+  } catch {
+    return collection;
+  }
+
+  for (const file of files) {
+    try {
+      const raw = fs.readFileSync(path.join(POST_REQUESTS_DIR, file), "utf8");
+      const parsed = JSON.parse(raw) as { type?: string; features?: any[] };
+      if (parsed && parsed.type === "FeatureCollection" && Array.isArray(parsed.features)) {
+        // keep all features from the file, not just the first one
+        parsed.features.forEach((feat) => {
+          if (feat && typeof feat === "object") {
+            collection.features.push(feat as GeoJSONFeature);
+          }
+        });
+      }
+    } catch {
+      // ignore bad files
+    }
+  }
+  return collection;
 }
 
 interface BottleView {
@@ -155,6 +214,153 @@ function stripRegionGeoJSON(response: unknown): unknown {
   return rest;
 }
 
+function normalizeText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function extractVintageYear(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const year = Math.trunc(value);
+    return year >= 1000 && year <= 9999 ? year : null;
+  }
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text) return null;
+
+  if (/^\d{4}$/.test(text)) {
+    const year = Number(text);
+    return Number.isFinite(year) ? year : null;
+  }
+
+  const m = text.match(/\b(1[0-9]{3}|2[0-9]{3})\b/);
+  if (!m) return null;
+  const year = Number(m[1]);
+  return Number.isFinite(year) ? year : null;
+}
+
+/**
+ * Creates a stable ASCII key for robust region-name matching.
+ * Examples:
+ * - "Württemberg" -> "wuerttemberg"
+ * - "Hessische Bergstraße" -> "hessische-bergstrasse"
+ * - "Baden, Germany" -> "baden"
+ */
+function normalizeRegionName(value: unknown): string {
+  if (value == null) return "";
+  let s = String(value).trim();
+  if (!s) return "";
+
+  // Remove common country suffixes at the tail.
+  s = s.replace(/(?:,\s*(?:germany|deutschland)|\(\s*(?:germany|deutschland)\s*\))\s*$/i, "");
+
+  // German special letters BEFORE unicode diacritic stripping.
+  s = s
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue")
+    .replace(/Ä/g, "ae")
+    .replace(/Ö/g, "oe")
+    .replace(/Ü/g, "ue")
+    .replace(/ß/g, "ss");
+
+  s = s.toLowerCase();
+  s = s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  s = s.replace(/&/g, "and");
+  s = s.replace(/[.,/\\:;|_+]+/g, " ");
+  s = s.replace(/[^a-z0-9 -]+/g, "");
+  s = s.replace(/\s*-\s*/g, "-");
+  s = s.replace(/\s+/g, " ").trim();
+  s = s.replace(/ /g, "-");
+  s = s.replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
+  return s;
+}
+
+function splitRegionCountry(value: unknown): { region: string | null; country: string | null } {
+  const raw = normalizeText(value);
+  if (!raw) return { region: null, country: null };
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return { region: parts[0] ?? null, country: parts.slice(1).join(", ") || null };
+  }
+  return { region: raw, country: null };
+}
+
+function normalizeWineRegionCountry(wine: Record<string, unknown>): Record<string, unknown> {
+  const regionSplit = splitRegionCountry(wine.region_name);
+  let region = regionSplit.region;
+  let country = normalizeText(wine.country) ?? regionSplit.country;
+  const vintageYear = extractVintageYear(wine.vintage);
+
+  // Fallback: winery_description often looks like "Baden, Germany".
+  if (!country) {
+    const descSplit = splitRegionCountry(wine.winery_description);
+    if (descSplit.country) {
+      if (!region || !descSplit.region || region.toLowerCase() === descSplit.region.toLowerCase()) {
+        region = region ?? descSplit.region;
+        country = descSplit.country;
+      }
+    }
+  }
+
+  return {
+    ...wine,
+    region_name: region ?? null,
+    country: country ?? null,
+    vintage: vintageYear,
+  };
+}
+
+function normalizeResponseRegionCountry(response: unknown): unknown {
+  const responseObj = toObject(response);
+  if (!("wine" in responseObj)) return responseObj;
+  const wineObj = toObject(responseObj.wine);
+  return {
+    ...responseObj,
+    wine: normalizeWineRegionCountry(wineObj),
+  };
+}
+
+function pickApiRegionString(primary: unknown, secondary?: unknown): string | null {
+  return normalizeText(primary) ?? normalizeText(secondary) ?? null;
+}
+
+function buildWFSNamePairs(features: WFSFeature[]): RegionNamePair[] {
+  const seen = new Set<string>();
+  const pairs: RegionNamePair[] = [];
+  for (const feature of features) {
+    const wfsDisplay = normalizeText(feature?.properties?.nam);
+    const wfsKey = normalizeRegionName(wfsDisplay);
+    if (!wfsDisplay || !wfsKey || seen.has(wfsKey)) continue;
+    seen.add(wfsKey);
+    pairs.push({ wfs_nam_display: wfsDisplay, wfs_nam_key: wfsKey });
+  }
+  return pairs;
+}
+
+function withRegionMatchMetadata(response: unknown, match: RegionMatchResult): unknown {
+  const normalizedResponse = toObject(normalizeResponseRegionCountry(response));
+  const wineObj = toObject(normalizedResponse.wine);
+  const firstMatch = match.matchedNames[0] ?? null;
+  return {
+    ...normalizedResponse,
+    wine: {
+      ...wineObj,
+      region_display: match.apiRegionString,
+      region_key: match.apiKey || null,
+      wfs_nam_display: firstMatch?.wfs_nam_display ?? null,
+      wfs_nam_key: firstMatch?.wfs_nam_key ?? null,
+    },
+    region_match: {
+      api_region_display: match.apiRegionString,
+      api_region_key: match.apiKey || null,
+      matched_feature_count: match.features.length,
+      wfs_matches: match.matchedNames,
+    },
+  };
+}
+
 function readBottlesFromGeoJSONFiles(): BottleView[] {
   let files: string[] = [];
   try {
@@ -248,12 +454,16 @@ function readBottlesFromGeoJSONFiles(): BottleView[] {
 
 /**
  * Fetches wine region features from WFS (BKG). Filters veg === "1040" (wine).
- * If regionName is provided, filters by properties.nam (exact match).
+ * If a region string is provided, filters by normalized properties.nam key.
  * Requests srsName=EPSG:4326 so geometry is in WGS84 (lon/lat), equivalent to
  * ST_AsGeoJSON(ST_Transform(geom, 4326)). Returns array of GeoJSON features, or [] on error/timeout.
  */
-async function fetchWineRegionsFromWFS(regionName?: string | null): Promise<Array<{ geometry?: unknown; properties?: Record<string, unknown> }>> {
-  if (regionName == null || String(regionName).trim() === "") return [];
+async function fetchWineRegionsFromWFS(regionInput?: unknown): Promise<RegionMatchResult> {
+  const apiRegionString = normalizeText(regionInput);
+  const apiKey = normalizeRegionName(apiRegionString);
+  if (!apiKey) {
+    return { apiRegionString, apiKey, candidates: [], matchedNames: [], features: [] };
+  }
   const params = new URLSearchParams({
     service: "WFS",
     version: "1.1.0",
@@ -268,77 +478,101 @@ async function fetchWineRegionsFromWFS(regionName?: string | null): Promise<Arra
   try {
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
-    if (!res.ok) return [];
-    const geojson = (await res.json()) as { features?: Array<{ properties?: { veg?: string; nam?: string }; geometry?: unknown }> };
+    if (!res.ok) return { apiRegionString, apiKey, candidates: [], matchedNames: [], features: [] };
+    const geojson = (await res.json()) as { features?: WFSFeature[] };
     const features = Array.isArray(geojson?.features) ? geojson.features : [];
-    let filtered = features.filter((f) => f?.properties?.veg === "1040");
-    const name = String(regionName).trim();
-    if (name) {
-      const nameNorm = name.toLowerCase();
-      filtered = filtered.filter((f) => {
-        const nam = f?.properties?.nam;
-        if (typeof nam !== "string" || nam.trim() === "") return false;
-        return nameNorm.includes(nam.trim().toLowerCase());
+    const wineFeatures = features.filter((f) => f?.properties?.veg === "1040");
+    const candidates = buildWFSNamePairs(wineFeatures);
+    const matched: WFSFeature[] = [];
+    for (const feature of wineFeatures) {
+      const wfsNamDisplay = normalizeText(feature?.properties?.nam);
+      const wfsNamKey = normalizeRegionName(wfsNamDisplay);
+      if (!wfsNamKey || wfsNamKey !== apiKey) continue;
+      matched.push({
+        ...feature,
+        properties: {
+          ...(feature.properties ?? {}),
+          region_display: apiRegionString,
+          region_key: apiKey,
+          wfs_nam_display: wfsNamDisplay,
+          wfs_nam_key: wfsNamKey,
+        },
       });
     }
-    return filtered;
+    const matchedNames = buildWFSNamePairs(matched);
+
+    if (DEBUG_REGION_MATCH) {
+      console.log(
+        `[region-match] apiRegionString="${apiRegionString ?? ""}" apiKey="${apiKey}" matched=${matched.length} candidates=${JSON.stringify(candidates)}`
+      );
+    }
+    return { apiRegionString, apiKey, candidates, matchedNames, features: matched };
   } catch {
     clearTimeout(timeout);
-    return [];
+    return { apiRegionString, apiKey, candidates: [], matchedNames: [], features: [] };
   }
 }
 
-function buildMultiPolygonGeometryFromWFSFeatures(
-  features: Array<{ geometry?: unknown }>,
-): { type: "MultiPolygon"; coordinates: unknown[] } | null {
-  const multiPolygonCoords: unknown[] = [];
-  for (const feature of features) {
-    const geometry = feature?.geometry as { type?: string; coordinates?: unknown } | undefined;
-    if (!geometry || geometry.coordinates == null) continue;
+function isPolygonGeometry(value: unknown): value is { type: "Polygon"; coordinates: unknown[] } {
+  return value != null && typeof value === "object" && (value as { type?: unknown }).type === "Polygon" && Array.isArray((value as { coordinates?: unknown }).coordinates);
+}
 
-    if (geometry.type === "Polygon" && Array.isArray(geometry.coordinates)) {
-      multiPolygonCoords.push(geometry.coordinates);
+function isMultiPolygonGeometry(value: unknown): value is { type: "MultiPolygon"; coordinates: unknown[] } {
+  return value != null && typeof value === "object" && (value as { type?: unknown }).type === "MultiPolygon" && Array.isArray((value as { coordinates?: unknown }).coordinates);
+}
+
+/**
+ * Merges WFS-returned Polygon/MultiPolygon geometries into one MultiPolygon.
+ * Returns null if no valid polygon geometry exists.
+ */
+function buildMultiPolygonGeometryFromWFSFeatures(features: WFSFeature[]): { type: "MultiPolygon"; coordinates: unknown[] } | null {
+  const multipolygonCoordinates: unknown[] = [];
+  for (const feature of features) {
+    const geometry = feature?.geometry;
+    if (isPolygonGeometry(geometry)) {
+      multipolygonCoordinates.push(geometry.coordinates);
       continue;
     }
-
-    if (geometry.type === "MultiPolygon" && Array.isArray(geometry.coordinates)) {
-      for (const polygonCoords of geometry.coordinates as unknown[]) {
-        multiPolygonCoords.push(polygonCoords);
-      }
+    if (isMultiPolygonGeometry(geometry)) {
+      multipolygonCoordinates.push(...geometry.coordinates);
     }
   }
-
-  if (multiPolygonCoords.length === 0) return null;
-  return { type: "MultiPolygon", coordinates: multiPolygonCoords };
+  if (multipolygonCoordinates.length === 0) return null;
+  return {
+    type: "MultiPolygon",
+    coordinates: multipolygonCoordinates,
+  };
 }
 
-function buildGeoJSON(payload: LogPayload | undefined, geometryOverride: unknown | null = null): GeoJSONOutput {
-  let geometry: unknown = geometryOverride;
-  if (geometry === undefined || geometry === null) {
+function buildGeoJSON(payload: LogPayload | undefined, geometryOverride?: unknown, responseOverride?: unknown): GeoJSONOutput {
+  // geometryOverride can be null or a geometry object. if undefined, fallback to payload.response.region_geojson.
+  const props = {
+    user_id: DEV_USER_ID,
+    request: stripFileBase64FromRequest(payload?.request ?? null),
+    response: stripRegionGeoJSON(responseOverride ?? normalizeResponseRegionCountry(payload?.response ?? null)),
+    error: payload?.error ?? null,
+  };
+
+  const collectGeom = (): unknown | null => {
+    if (geometryOverride !== undefined) return geometryOverride ?? null;
     const regionGeo = payload?.response?.region_geojson;
-    const hasFeatures =
-      regionGeo != null &&
-      typeof regionGeo === "object" &&
-      regionGeo.type === "FeatureCollection" &&
-      Array.isArray(regionGeo.features);
-    const features = hasFeatures && regionGeo?.features ? regionGeo.features : [];
-    geometry = features.length > 0 && features[0].geometry != null ? features[0].geometry : null;
-  }
+    if (!regionGeo || typeof regionGeo !== "object" || regionGeo.type !== "FeatureCollection" || !Array.isArray(regionGeo.features)) {
+      return null;
+    }
+    const wfsLikeFeatures: WFSFeature[] = regionGeo.features.map((f) => ({ geometry: f?.geometry }));
+    return buildMultiPolygonGeometryFromWFSFeatures(wfsLikeFeatures);
+  };
+
+  const geometry = collectGeom();
+  const features: GeoJSONFeature[] = [{
+    type: "Feature",
+    geometry,
+    properties: props,
+  }];
 
   return {
     type: "FeatureCollection",
-    features: [
-      {
-        type: "Feature",
-        geometry,
-        properties: {
-          user_id: DEV_USER_ID,
-          request: stripFileBase64FromRequest(payload?.request ?? null),
-          response: stripRegionGeoJSON(payload?.response ?? null),
-          error: payload?.error ?? null,
-        },
-      },
-    ],
+    features,
   };
 }
 
@@ -374,6 +608,15 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const bottles = readBottlesFromGeoJSONFiles();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(bottles));
+    return;
+  }
+
+  // new endpoint returns all features (geometry + properties) collected
+  // from the GeoJSON files.  useful so the frontend can render the polygons
+  if (req.method === "GET" && req.url === "/features") {
+    const features = readAllGeoJSONFeatures();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(features));
     return;
   }
 
@@ -435,46 +678,55 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const analysis = data.analysis_result ?? null;
     const analysisObj = toObject(analysis);
     const wineObj = toObject(analysisObj.wine);
-    const regionName = typeof wineObj.region_name === "string" ? wineObj.region_name : null;
-    const wfsFeatures = await fetchWineRegionsFromWFS(regionName);
-    const geometry = buildMultiPolygonGeometryFromWFSFeatures(wfsFeatures);
-    const sanitizedAnalysis = stripRegionGeoJSON(analysis);
+    const regionName = pickApiRegionString(wineObj.region_name, bottle.region);
+    const wfsResult = await fetchWineRegionsFromWFS(regionName);
+    const mergedGeometry = buildMultiPolygonGeometryFromWFSFeatures(wfsResult.features);
+    const sanitizedAnalysis = stripRegionGeoJSON(withRegionMatchMetadata(analysis, wfsResult));
     const imagePath = saveImageDataUrl(bottle.image, data.endpoint || "wine-log");
+    const bottleRegionSplit = splitRegionCountry(bottle.region);
+    const analysisWine = toObject(toObject(sanitizedAnalysis).wine);
+    const normalizedWineCountry = normalizeText(analysisWine.country);
+    const manualRegion = bottleRegionSplit.region ?? null;
+    const manualCountry = normalizeText(bottle.country) ?? bottleRegionSplit.country ?? normalizedWineCountry;
+
+    // keep one scan = one feature; merge all matching WFS polygons into one MultiPolygon.
+    const manualProps = {
+      brand: bottle.brand ?? null,
+      producer: bottle.producer ?? null,
+      year: extractVintageYear(wineObj.vintage),
+      region: manualRegion,
+      country: manualCountry,
+      wine_type: bottle.wine_type ?? null,
+      is_german: bottle.is_german ?? true,
+      city: bottle.city ?? null,
+      score: bottle.score ?? null,
+      notes: bottle.notes ?? null,
+      lat: bottle.lat ?? null,
+      lng: bottle.lng ?? null,
+      image_path: imagePath,
+      image_data_url: null,
+      timestamp: new Date().toISOString(),
+    };
+
+    const baseProps = {
+      user_id: DEV_USER_ID,
+      request: {
+        query: { mode: "analyzer", lang: "en" },
+        file: data.scan_file ?? null,
+        file_base64: null,
+      },
+      response: sanitizedAnalysis,
+      error: null,
+      manual: manualProps,
+    };
+
+    const features: GeoJSONFeature[] = [
+      { type: "Feature", geometry: mergedGeometry, properties: baseProps },
+    ];
 
     const geojson: GeoJSONOutput = {
       type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          geometry,
-          properties: {
-            user_id: DEV_USER_ID,
-            request: {
-              query: { mode: "analyzer", lang: "en" },
-              file: data.scan_file ?? null,
-              file_base64: null,
-            },
-            response: sanitizedAnalysis,
-            error: null,
-            manual: {
-              brand: bottle.brand ?? null,
-              producer: bottle.producer ?? null,
-              year: bottle.year ?? null,
-              region: bottle.region ?? null,
-              wine_type: bottle.wine_type ?? null,
-              is_german: bottle.is_german ?? true,
-              city: bottle.city ?? null,
-              score: bottle.score ?? null,
-              notes: bottle.notes ?? null,
-              lat: bottle.lat ?? null,
-              lng: bottle.lng ?? null,
-              image_path: imagePath,
-              image_data_url: null,
-              timestamp: new Date().toISOString(),
-            },
-          },
-        },
-      ],
+      features,
     };
 
     try {
@@ -491,7 +743,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
     const filepath = path.join(POST_REQUESTS_DIR, filename);
 
     try {
-      fs.writeFileSync(filepath, JSON.stringify(geojson, null, 2));
+      fs.writeFileSync(filepath, JSON.stringify(geojson, null, 2), "utf8");
     } catch {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Failed to write file" }));
@@ -587,10 +839,13 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   }
 
   const payload = data.payload;
-  const regionName = payload?.response?.wine?.region_name ?? null;
-  const wfsFeatures = await fetchWineRegionsFromWFS(regionName);
-  const wfsGeometry = buildMultiPolygonGeometryFromWFSFeatures(wfsFeatures);
-  const geojson = buildGeoJSON(payload, wfsGeometry);
+  const payloadObj = toObject(payload);
+  const payloadManual = toObject(payloadObj.manual);
+  const regionName = pickApiRegionString(payload?.response?.wine?.region_name, payloadManual.region);
+  const wfsResult = await fetchWineRegionsFromWFS(regionName);
+  const mergedGeometry = buildMultiPolygonGeometryFromWFSFeatures(wfsResult.features);
+  const responseOverride = withRegionMatchMetadata(payload?.response ?? null, wfsResult);
+  const geojson = buildGeoJSON(payload, mergedGeometry ?? undefined, responseOverride);
 
   try {
     fs.mkdirSync(POST_REQUESTS_DIR, { recursive: true });
@@ -606,7 +861,7 @@ const server = http.createServer(async (req: http.IncomingMessage, res: http.Ser
   const filepath = path.join(POST_REQUESTS_DIR, filename);
 
   try {
-    fs.writeFileSync(filepath, JSON.stringify(geojson, null, 2));
+    fs.writeFileSync(filepath, JSON.stringify(geojson, null, 2), "utf8");
   } catch {
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Failed to write file" }));

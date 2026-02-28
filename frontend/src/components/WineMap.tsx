@@ -55,7 +55,14 @@ export default function WineMap() {
     } catch (err) {
       console.error("Failed to fetch map data", err);
     } finally {
-      const nextGeoData = await storage.fetchRegionsGeoJSON() as GeoJSON.GeoJsonObject;
+      // try to read any polygons the dev server has written; fall back to the
+      // static country boundary if none are available.
+      let nextGeoData = await storage.fetchLoggedFeatures() as GeoJSON.GeoJsonObject;
+      if (!nextGeoData ||
+          nextGeoData.type !== "FeatureCollection" ||
+          (Array.isArray(nextGeoData.features) && nextGeoData.features.length === 0)) {
+        nextGeoData = await storage.fetchRegionsGeoJSON() as GeoJSON.GeoJsonObject;
+      }
       setAggregatedData(aggData);
       setGeoData(nextGeoData);
       setLoading(false);
@@ -82,20 +89,31 @@ export default function WineMap() {
             key={JSON.stringify(geoData).length}
             data={geoData}
             style={(feature) => {
+              // existing country-boundary case uses feature.properties.name
               const regionName = feature?.properties?.name as string | undefined;
               const prodData = aggregatedData?.production?.find((p) => p.region === regionName);
+              if (regionName) {
+                return {
+                  fillColor: prodData ? "#5A5A40" : "#A1A19A",
+                  weight: 1,
+                  opacity: 1,
+                  color: "white",
+                  fillOpacity: prodData ? 0.4 : 0.1,
+                };
+              }
+              // otherwise this is a logged feature; highlight in red
               return {
-                fillColor: prodData ? "#5A5A40" : "#A1A19A",
-                weight: 1,
+                fillColor: "#ff0000",
+                weight: 2,
                 opacity: 1,
-                color: "white",
-                fillOpacity: prodData ? 0.4 : 0.1,
+                color: "#800000",
+                fillOpacity: 0.2,
               };
             }}
             onEachFeature={(feature, layer) => {
               const regionName = feature?.properties?.name as string | undefined;
               const prodData = aggregatedData?.production?.find((p) => p.region === regionName);
-              if (prodData) {
+              if (regionName && prodData) {
                 layer.bindPopup(`
                   <div class="p-2 space-y-2">
                     <p class="font-bold text-sm text-[#5A5A40]">${regionName}</p>
@@ -110,6 +128,10 @@ export default function WineMap() {
                     </div>
                   </div>
                 `);
+              } else if (!regionName) {
+                // logged feature - show basic info or raw properties
+                const props = feature?.properties || {};
+                layer.bindPopup(`<pre style="font-size:10px;max-width:200px">${JSON.stringify(props, null, 2)}</pre>`);
               }
             }}
           />
