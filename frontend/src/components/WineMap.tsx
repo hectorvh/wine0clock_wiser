@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Popup, GeoJSON as LeafletGeoJSON, Circle, CircleMarker, Tooltip, LayerGroup, Pane, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import storage from "../lib/storage";
@@ -110,19 +110,38 @@ function MapBoundsObserver({
 }: {
   onBoundsChange: (bbox: [number, number, number, number]) => void;
 }) {
-  const emit = (map: L.Map) => {
-    const b = map.getBounds();
-    onBoundsChange([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
-  };
+  const lastBboxRef = useRef<string | null>(null);
 
   const map = useMapEvents({
-    moveend: (ev) => emit(ev.target),
-    zoomend: (ev) => emit(ev.target),
+    moveend(ev) {
+      const b = ev.target.getBounds();
+      const bbox: [number, number, number, number] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      const key = bbox.map((n) => n.toFixed(4)).join(",");
+      if (lastBboxRef.current !== key) {
+        lastBboxRef.current = key;
+        onBoundsChange(bbox);
+      }
+    },
+    zoomend(ev) {
+      const b = ev.target.getBounds();
+      const bbox: [number, number, number, number] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      const key = bbox.map((n) => n.toFixed(4)).join(",");
+      if (lastBboxRef.current !== key) {
+        lastBboxRef.current = key;
+        onBoundsChange(bbox);
+      }
+    },
   });
 
   useEffect(() => {
-    emit(map);
-  }, [map]);
+    const b = map.getBounds();
+    const bbox: [number, number, number, number] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const key = bbox.map((n) => n.toFixed(4)).join(",");
+    if (lastBboxRef.current !== key) {
+      lastBboxRef.current = key;
+      onBoundsChange(bbox);
+    }
+  }, [map, onBoundsChange]);
 
   return null;
 }
@@ -193,7 +212,11 @@ export default function WineMap() {
   };
 
   useEffect(() => {
-    fetchGeoData();
+    if (viewportBbox === undefined) return;
+    const t = window.setTimeout(() => {
+      fetchGeoData();
+    }, 300);
+    return () => window.clearTimeout(t);
   }, [viewportBbox]);
 
   const productionSymbols = useMemo<ProductionRegionSymbol[]>(() => {
