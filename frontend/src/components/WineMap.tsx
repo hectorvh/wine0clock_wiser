@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
-import { MapContainer, TileLayer, Marker, Popup, GeoJSON, Circle, CircleMarker, Tooltip, LayerGroup, Pane, useMapEvents } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, GeoJSON as LeafletGeoJSON, Circle, CircleMarker, Tooltip, LayerGroup, Pane, useMapEvents } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import storage from "../lib/storage";
 import L from "leaflet";
 import pointOnFeature from "@turf/point-on-feature";
 import type { Bottle } from "../types";
+import { fetchWineLogsWfs } from "../lib/geoserver";
 
 const markerIcon = "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png";
 const markerShadow = "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png";
@@ -104,6 +105,43 @@ function ProductionZoomHandler({ onZoomChange }: { onZoomChange: (z: number) => 
   return null;
 }
 
+function MapBoundsObserver({
+  onBoundsChange,
+}: {
+  onBoundsChange: (bbox: [number, number, number, number]) => void;
+}) {
+  const emit = (map: L.Map) => {
+    const b = map.getBounds();
+    onBoundsChange([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+  };
+
+  const map = useMapEvents({
+    moveend: (ev) => emit(ev.target),
+    zoomend: (ev) => emit(ev.target),
+  });
+
+  useEffect(() => {
+    emit(map);
+  }, [map]);
+
+  return null;
+}
+
+function extractRegionMeta(props: Record<string, any>): {
+  regionId: string;
+  regionName: string;
+} {
+  const wine = (props.response?.wine ?? {}) as Record<string, any>;
+  const manual = (props.manual ?? {}) as Record<string, any>;
+  const regionId = normalizeRegionKey(
+    wine.region_key ?? props.response_wine_region_key ?? props.region_id ?? props.region_name ?? wine.region_name ?? props.response_wine_region_name ?? manual.region ?? props.manual_region ?? props.name
+  );
+  const regionName = String(
+    wine.region_display ?? props.response_wine_region_display ?? wine.region_name ?? props.response_wine_region_name ?? props.region_name ?? manual.region ?? props.manual_region ?? props.name ?? regionId
+  ).trim();
+  return { regionId, regionName: regionName || regionId };
+}
+
 export default function WineMap() {
   const [aggregatedData, setAggregatedData] = useState<{ production: AggregatedProd[]; consumption: AggregatedPoint[] } | null>(null);
   const [bottles, setBottles] = useState<Bottle[]>([]);
@@ -113,13 +151,18 @@ export default function WineMap() {
   const [productionZoom, setProductionZoom] = useState(6);
   const [hoveredRegionId, setHoveredRegionId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  const [viewportBbox, setViewportBbox] = useState<[number, number, number, number] | undefined>(undefined);
 
   useEffect(() => {
     fetchData();
   }, []);
 
   useEffect(() => {
-    const handler = () => { setLoading(true); fetchData(); };
+    const handler = () => {
+      setLoading(true);
+      fetchData();
+      fetchGeoData();
+    };
     window.addEventListener("winetrack:data-changed", handler);
     return () => window.removeEventListener("winetrack:data-changed", handler);
   }, []);
@@ -132,46 +175,47 @@ export default function WineMap() {
     } catch (err) {
       console.error("Failed to fetch map data", err);
     } finally {
-      // try to read any polygons the dev server has written; fall back to the
-      // static country boundary if none are available.
-      let nextGeoData = await storage.fetchLoggedFeatures() as GeoJSON.GeoJsonObject;
-      if (!nextGeoData ||
-          nextGeoData.type !== "FeatureCollection" ||
-          (Array.isArray(nextGeoData.features) && nextGeoData.features.length === 0)) {
-        nextGeoData = await storage.fetchRegionsGeoJSON() as GeoJSON.GeoJsonObject;
-      }
       setAggregatedData(aggData);
       setBottles(storage.getAllBottles());
-      setGeoData(nextGeoData);
       setLoading(false);
     }
   };
 
+  const fetchGeoData = async () => {
+    try {
+      const nextGeoData = await fetchWineLogsWfs({ bbox: viewportBbox, limit: 5000 });
+      setGeoData(nextGeoData);
+    } catch (e) {
+      console.error("Failed to fetch logs from GeoServer WFS", e);
+      const fallback = await storage.fetchRegionsGeoJSON() as GeoJSON.GeoJsonObject;
+      setGeoData(fallback);
+    }
+  };
+
+  useEffect(() => {
+    fetchGeoData();
+  }, [viewportBbox]);
+
   const productionSymbols = useMemo<ProductionRegionSymbol[]>(() => {
-    if (!geoData || geoData.type !== "FeatureCollection" || !Array.isArray(geoData.features)) return [];
+    if (!geoData || geoData.type !== "FeatureCollection") return [];
+    const featureCollection = geoData as GeoJSON.FeatureCollection;
+    if (!Array.isArray(featureCollection.features)) return [];
 
     const regionById = new Map<string, { regionName: string; feature: GeoJSON.Feature; representative: [number, number] }>();
-    for (const rawFeature of geoData.features) {
+    for (const rawFeature of featureCollection.features) {
       if (!rawFeature || rawFeature.type !== "Feature" || !rawFeature.geometry) continue;
       const geomType = rawFeature.geometry.type;
       if (geomType !== "Polygon" && geomType !== "MultiPolygon") continue;
 
       const props = (rawFeature.properties ?? {}) as Record<string, any>;
-      const wine = (props.response?.wine ?? {}) as Record<string, any>;
-      const manual = (props.manual ?? {}) as Record<string, any>;
-      const regionId = normalizeRegionKey(
-        wine.region_key ?? props.region_id ?? props.region_name ?? wine.region_name ?? manual.region ?? props.name
-      );
+      const { regionId, regionName } = extractRegionMeta(props);
       if (!regionId) continue;
       if (regionById.has(regionId)) continue;
 
       const representative = getRepresentativePoint(rawFeature as GeoJSON.Feature);
       if (!representative) continue;
-      const regionName = String(
-        wine.region_display ?? wine.region_name ?? props.region_name ?? manual.region ?? props.name ?? regionId
-      ).trim();
       regionById.set(regionId, {
-        regionName: regionName || regionId,
+        regionName,
         feature: rawFeature as GeoJSON.Feature,
         representative,
       });
@@ -257,6 +301,7 @@ export default function WineMap() {
         zoomControl={false}
       >
         <ProductionZoomHandler onZoomChange={setProductionZoom} />
+        <MapBoundsObserver onBoundsChange={setViewportBbox} />
         <TileLayer
           url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
           attribution={'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}
@@ -270,7 +315,7 @@ export default function WineMap() {
 
             {/* productionPolygonLayer: always mounted; style changes by zoom only */}
             <LayerGroup>
-              <GeoJSON
+              <LeafletGeoJSON
                 key={`prod-polygons-${regionFeatureCollection.features.length}`}
                 data={regionFeatureCollection}
                 pane="production-polygons-pane"
@@ -361,7 +406,7 @@ export default function WineMap() {
 
             {/* productionHighlightLayer: hover/click outline only, above circles */}
             <LayerGroup>
-              <GeoJSON
+              <LeafletGeoJSON
                 key={`prod-highlight-${activeHighlightRegionId ?? "none"}`}
                 data={highlightFeatureCollection}
                 pane="production-highlight-pane"

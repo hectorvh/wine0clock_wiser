@@ -14,6 +14,12 @@ export default defineConfig({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      "/geoserver": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+    },
   },
   plugins: [react()],
   resolve: {
