@@ -1,0 +1,277 @@
+---
+title: "WineO'Clock - Project Report"
+subtitle: "Geospatial Wine Tracking Application | Winter 2025/2026"
+author: "Ammar Daoud, Hector Valdes, Lauren Fissel"
+date: "1 March 2026"
+course: "Analysis of Spatio-Temporal Data, Winter 2025/2026"
+affiliation: "Universitat Munster"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    toc-location: left
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: false
+    theme: flatly
+    self-contained: true
+    fig-align: center
+    fig-cap-location: bottom
+    css: style.css
+execute:
+  eval: false
+  echo: true
+  warning: false
+  message: false
+---
+
+**Group 7** · Repository: [https://github.com/hectorvh/wine0clock_wiser.git](https://github.com/hectorvh/wine0clock_wiser.git)
+
+---
+
+## 1. Project Overview
+
+**wine0clock** is a monorepo application for tracking tasted wines: users capture a photo of a bottle or label, receive recognition results (region, producer, type, vintage, etc.), and can save the result as a wine log with geometry. Logs are stored in Supabase (Postgres/PostGIS) and can be published via GeoServer for the map. The map shows **consumption** (where wine was drunk) and **production** (where wines come from, with counts and top wine types per region).
+
+| Item | Description |
+|------|-------------|
+| **Repository** | [wine0clock_wiser](https://github.com/hectorvh/wine0clock_wiser.git) (monorepo) |
+| **Workspaces** | `frontend`, `backend` |
+| **Frontend port** | 8000 (Vite dev server) |
+| **Backend log server port** | 3001 |
+
+---
+
+## 2. Organization and Structure
+
+### 2.1 Repository Layout
+
+| Path | Purpose |
+|------|---------|
+| `frontend/` | Default web app (Vite, React, TypeScript). Can be replaced by another frontend. |
+| `backend/` | Supabase config, Edge Functions, and Node.js log server. |
+| `backend/supabase/` | Supabase CLI config, migrations, Edge Functions. |
+| `backend/supabase/functions/` | Deno Edge Functions: `recognize-wine`, `wine-explorer`, `wine-analyzer`. |
+| `backend/supabase/migrations/` | SQL migrations (PostGIS, `wine_logs` table, RPCs, RLS). |
+| `backend/post-requests/` | Optional local GeoJSON debug exports. |
+| `.env` (root) | Environment variables (not committed). |
+
+### 2.2 Frontend Structure
+
+| Path | Purpose |
+|------|---------|
+| `frontend/src/` | Application source. |
+| `frontend/src/components/` | React components (Dashboard, Scanner, BottleList, WineMap). |
+| `frontend/src/lib/` | Utilities: `storage.ts`, `geoserver.ts`, `storage-images.ts`. |
+| `frontend/src/types.ts` | Shared types (Bottle, Stats, ScanResult). |
+
+### 2.3 Backend Structure
+
+| Path | Purpose |
+|------|---------|
+| `backend/log-post-server.ts` | Node.js HTTP server: receives POST payloads, persists to Supabase, optional GeoJSON export. |
+| `backend/supabase/config.toml` | Supabase project ID and function config (`verify_jwt = false` for recognize-wine, wine-explorer, wine-analyzer). |
+
+---
+
+## 3. Data Sources
+
+### 3.1 Primary Data Sources
+
+| Source | Type | Role |
+|--------|------|------|
+| **Supabase (Postgres/PostGIS)** | Database | Persistence for wine logs. Table `wine_logs` with flattened columns and `geom geometry(MultiPolygon, 4326)`. |
+| **Supabase Storage** | Object storage | Bucket `wine_labels` for label images; linked from `wine_logs` via `image_bucket`, `image_path`. |
+| **GeoServer WFS** | OGC WFS 2.0 | Production map: frontend requests GeoJSON for layer `wine0clock:wine_logs` (backed by same PostGIS). Optional; fallback used if unavailable. |
+| **BKG WFS (dlm1000)** | OGC WFS 1.1.0 | Wine region geometries. URL: `https://sgx.geodatenzentrum.de/wfs_dlm1000`, layer `dlm1000:objart_43001_f`, filter `veg === "1040"`. Used by Edge Function and log server to enrich records with region polygons. |
+| **RapidAPI (wine recognition)** | REST | Wine label recognition: `wine-recognition2.p.rapidapi.com`. Used by Edge Function `recognize-wine`. |
+| **RapidAPI (Wine Explorer)** | REST | Search and wine info: `wine-explorer-api-ratings-insights-and-search.p.rapidapi.com`. Used for enrichment in `recognize-wine`. |
+| **RapidAPI (Wine Analyzer)** | REST | Full analysis: `wine-analyzer.p.rapidapi.com`. Used when mode is `analyzer`. |
+| **Local storage (browser)** | Key-value | Bottles cache (`winetrack_bottles_v1`), next-id (`winetrack_next_id_v1`). |
+| **GitHub (static GeoJSON)** | HTTP | Fallback region geometry: `https://raw.githubusercontent.com/johan/world.geo.json/master/countries/DEU.geo.json` for map when WFS/GeoServer unavailable. |
+
+### 3.2 Data Flow Summary
+
+- **Ingestion:** Photo → recognize-wine (Supabase Edge Function) → external APIs → normalized response + WFS region GeoJSON → frontend sends to log server → log server persists to Supabase (and optionally writes local GeoJSON).
+- **Map (Production):** Frontend → GeoServer WFS GetFeature (typeName `wine0clock:wine_logs`, GeoJSON) → aggregation and rendering; fallback: log server `/features` or static/regions GeoJSON.
+- **Map (Consumption):** Aggregated from bottles (log server `/bottles` or local cache).
+
+---
+
+## 4. Technologies and Libraries
+
+### 4.1 Frontend
+
+| Category | Technology / Library |
+|----------|----------------------|
+| **Runtime / build** | Node.js, npm workspaces, Vite 5, TypeScript 5 |
+| **UI framework** | React 18 |
+| **Routing** | react-router-dom 6 |
+| **Maps** | Leaflet 1.9, react-leaflet 4.2 |
+| **Geospatial** | @turf/point-on-feature 7.3 |
+| **Backend client** | @supabase/supabase-js 2.97 |
+| **State / data** | @tanstack/react-query 5.83 |
+| **Forms / validation** | react-hook-form, @hookform/resolvers, zod |
+| **UI components** | Radix UI (accordion, dialog, dropdown, tabs, toast, etc.), shadcn-ui patterns |
+| **Styling** | Tailwind CSS 3.4, tailwindcss-animate, class-variance-authority, clsx, tailwind-merge |
+| **Motion** | motion (framer-motion) 12 |
+| **Charts** | recharts 2.15 |
+| **Icons** | lucide-react |
+| **Dev** | Vitest, ESLint, PostCSS, autoprefixer |
+
+### 4.2 Backend
+
+| Category | Technology / Library |
+|----------|----------------------|
+| **Log server** | Node.js, native `http` module, tsx (TypeScript execution) |
+| **Edge Functions** | Deno, Supabase Edge Runtime (`jsr:@supabase/functions-js/edge-runtime.d.ts`) |
+| **Database** | Supabase (Postgres), PostGIS extension |
+| **CLI** | Supabase CLI (migrations, functions serve/deploy, secrets) |
+
+### 4.3 External Services (APIs)
+
+| Service | Protocol | Purpose |
+|---------|----------|---------|
+| Supabase REST API | HTTPS, JWT / service role | Table inserts, RPC `insert_wine_log_from_feature`, Storage uploads. |
+| Supabase Storage API | HTTPS | Upload label images to bucket `wine_labels`; signed URLs for display. |
+| GeoServer WFS | HTTP/HTTPS, WFS 2.0 | GetFeature, outputFormat=application/json, bbox (EPSG:4326). |
+| BKG WFS | HTTPS, WFS 1.1.0 | GetFeature, wine region polygons (EPSG:4326). |
+| RapidAPI (recognition, explorer, analyzer) | HTTPS, REST | Wine recognition and enrichment; key via `RAPIDAPI_KEY`. |
+
+---
+
+## 5. Services
+
+### 5.1 Supabase Edge Functions
+
+| Function | Purpose | Auth |
+|----------|---------|------|
+| **recognize-wine** | Main recognition pipeline. Calls RapidAPI recognition and/or analyzer/explorer; normalizes response; fetches BKG WFS wine regions. | verify_jwt = false |
+| **wine-explorer** | Explorer API proxy / helpers. | verify_jwt = false |
+| **wine-analyzer** | Analyzer API proxy / helpers. | verify_jwt = false |
+
+### 5.2 Backend Log Server (Node.js)
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/log-post` | POST | Receives full request/response payload; enriches with WFS region geometry; persists one row per log via Supabase RPC `insert_wine_log_from_feature`; optionally writes GeoJSON to `backend/post-requests/`. |
+| `/save-bottle` | POST | Receives bottle + analysis_result + scan_file; builds GeoJSON feature; persists to Supabase; uploads image to Storage bucket `wine_labels` if present; updates `wine_logs` image metadata; writes optional local GeoJSON. |
+| `/bottles` | GET | Returns list of bottles (from Supabase-backed data / synthetic GeoJSON filenames); can include signed image URLs. |
+| `/features` | GET | Returns GeoJSON FeatureCollection of wine logs (from DB or fallback). |
+| `/delete-bottle` | POST | Deletes log by source file name; removes Storage object if any. |
+
+### 5.3 Frontend Dev Proxy (Vite)
+
+| Path | Target | Purpose |
+|------|--------|---------|
+| `/geoserver` | `http://localhost:8080` | Proxies GeoServer WFS requests to avoid CORS when frontend runs on port 8000. |
+
+---
+
+## 6. Connections and Protocols
+
+| Connection | Protocol | Port / URL | Notes |
+|------------|----------|------------|--------|
+| Frontend ↔ Supabase | HTTPS | VITE_SUPABASE_URL | Anon key for client; Edge Function invocations, optional Storage. |
+| Frontend ↔ Log server | HTTP | localhost:3001 (VITE_LOG_POST_URL) | `/log-post`, `/save-bottle`, `/bottles`, `/features`, `/delete-bottle`. |
+| Frontend ↔ GeoServer | HTTP/HTTPS | VITE_GEOSERVER_BASE_URL or `/geoserver` (proxied) | WFS 2.0 GetFeature, application/json. |
+| Log server ↔ Supabase | HTTPS | SUPABASE_URL | Service role key; REST and RPC. |
+| Log server ↔ BKG WFS | HTTPS | sgx.geodatenzentrum.de | WFS 1.1.0 GetFeature. |
+| Edge Function ↔ RapidAPI | HTTPS | Various hosts | REST; API key from Supabase secrets. |
+| Edge Function ↔ BKG WFS | HTTPS | sgx.geodatenzentrum.de | WFS 1.1.0 GetFeature. |
+
+---
+
+## 7. Processes and Workflow
+
+### 7.1 Wine Recognition and Save
+
+1. User captures or uploads a photo in the **Scanner** (frontend).
+2. Frontend calls **recognize-wine** Edge Function (Supabase) with `multipart/form-data` (file, mode, lang, include_raw).
+3. Edge Function calls RapidAPI (recognition and/or analyzer/explorer), normalizes response, then fetches BKG WFS wine regions by `region_name` and attaches `region_geojson`.
+4. Frontend receives normalized result; user can edit and save.
+5. On save, frontend POSTs to log server **/save-bottle** with bottle, analysis_result, and optional scan_file (image).
+6. Log server builds one GeoJSON feature (merged MultiPolygon from WFS match or fallback), calls Supabase RPC **insert_wine_log_from_feature**, uploads image to Storage bucket **wine_labels**, updates `wine_logs` image columns; optionally writes GeoJSON to `backend/post-requests/`.
+7. Frontend syncs bottles via **/bottles** and dispatches `winetrack:data-changed`.
+
+### 7.2 Map (Production Tab)
+
+1. Frontend obtains map bounds (moveend/zoomend), debounced.
+2. **fetchWineLogsWfs** builds WFS URL (typeName `wine0clock:wine_logs`, bbox, count), fetches GeoJSON FeatureCollection.
+3. On failure, fallback: **fetchRegionsGeoJSON** (Germany) or **fetchLoggedFeatures** (log server `/features`).
+4. Client aggregates by region (normalized key): frequency, top 3 wine types; computes representative points with **@turf/point-on-feature**.
+5. Renders proportional circle markers, polygon outlines, zoom-dependent styles, hover/click highlights and popups.
+
+### 7.3 Map (Consumption Tab)
+
+1. Data comes from **getAggregatedMap()** (bottles from storage or `/bottles`).
+2. Aggregation by city/lat-lng: count, brands, origins.
+3. Renders circles and markers with popups.
+
+---
+
+## 8. Data Ingestion
+
+Data ingestion is split into two storage targets: **structured data** (wine log metadata, geometry, and attributes) is stored in the **Supabase Postgres table `wine_logs`**; **label images** are stored in the **Supabase Storage bucket `wine_labels`**. The log server writes to both: one row per log in the table (including geometry and image metadata columns such as `image_bucket`, `image_path`), and the image file in Storage, linked from that row.
+
+| Ingestion path | Input | Processing | Output |
+|----------------|-------|-------------|--------|
+| **Photo → recognize-wine** | Image file (multipart) | RapidAPI recognition/analyzer/explorer; BKG WFS for region geometry. | Normalized JSON (wine, sensory, serving, ratings, region_geojson). No persistence yet. |
+| **Save log (save-bottle)** | Bottle + analysis_result + optional image | Log server: merge region geometry (WFS if needed), build one GeoJSON feature; call Supabase RPC `insert_wine_log_from_feature` → **structured data in Supabase table `wine_logs`**; if image present, upload to **Supabase Storage bucket `wine_labels`** and update `wine_logs` image columns (`image_path`, etc.). Optionally write local GeoJSON to `backend/post-requests/`. | One row in **Supabase table `wine_logs`** (flattened attributes + `geom`); image file in **Supabase Storage `wine_labels`**; optional local GeoJSON. |
+| **Save log (log-post)** | Full payload (request/response) | Same as above (legacy path): RPC insert → table; optional image upload → Storage; optional local GeoJSON. | One row in **Supabase table `wine_logs`**; image in **Supabase Storage `wine_labels`** if provided; optional local GeoJSON. |
+| **Map Production** | Viewport bbox | Frontend: GeoServer WFS GetFeature (layer backed by `wine_logs`) or fallback (log server `/features` or static GeoJSON). | GeoJSON FeatureCollection → client-side aggregation → proportional symbols and polygons on map. |
+| **Map Consumption** | Cached bottles (from `/bottles` or localStorage) | Client aggregation by city/lat-lng. | Aggregated points and stats rendered on map. |
+| **Bottles sync** | GET /bottles | Log server reads from **Supabase table `wine_logs`** (or synthetic file list); for each log with `image_path`, generates a signed URL for **Supabase Storage `wine_labels`**. | List of bottles with optional signed image URLs pointing at Storage. |
+
+---
+
+## 9. Results and Features
+
+### 9.1 User-Facing Features
+
+| Feature | Description |
+|---------|-------------|
+| **Dashboard** | Summary stats (total bottles, active regions, average score); navigation to Scan, Logs, Map. |
+| **Scanner** | Capture/upload photo → call recognize-wine → show result; edit and save as bottle. |
+| **Bottle list (Logs)** | List of saved bottles; sync from log server; update/delete. |
+| **Map** | Two tabs: **Consumption** (where wine was drunk, aggregated by place), **Production** (origin regions: proportional symbols, frequency, top 3 wine types per region, zoom-dependent outlines and highlights). |
+| **Persistence** | Wine logs stored in Supabase Postgres/PostGIS; label images in Supabase Storage bucket `wine_labels`. |
+
+### 9.2 Production Map Behavior
+
+- **Data source:** GeoServer WFS layer `wine0clock:wine_logs` (or fallback).
+- **Aggregation:** By normalized region key: frequency = count of logs per region; top 3 wine types per region.
+- **Visualization:** Circle markers at representative points (point-on-surface); area-based radius scaling; polygon outlines; zoom-based visibility of outlines; hover/click highlight; popups with region name, record count, top wine types.
+- **Optional bbox:** WFS requests can include bbox (EPSG:4326) and count limit (e.g. 5000) for viewport-based loading.
+
+### 9.3 Consumption Map Behavior
+
+- **Data source:** Bottles from storage or `/bottles`.
+- **Aggregation:** By city or lat/lng: count, brands, origins.
+- **Visualization:** Circles and markers with popups (city, count, top brands, origins).
+
+### 9.4 Database Results
+
+- **Table:** `wine_logs` — flattened columns for request/response/manual fields, plus `geom geometry(MultiPolygon, 4326)`, image metadata columns.
+- **RPC:** `insert_wine_log_from_feature` — inserts one row from GeoJSON feature (geometry + flattened properties).
+- **RPC:** `get_wine_logs_feature_collection` — returns GeoJSON FeatureCollection for all logs (used by backend or GeoServer when backed by same DB).
+- **RLS:** Policies for authenticated select; service_role for insert/update/delete and RPC execute.
+
+---
+
+## 10. Environment and Configuration
+
+| Variable | Where | Purpose |
+|----------|--------|---------|
+| VITE_SUPABASE_URL | Frontend | Supabase project URL. |
+| VITE_SUPABASE_PUBLISHABLE_KEY | Frontend | Anon/public key. |
+| VITE_SUPABASE_PROJECT_ID | Frontend | Project reference. |
+| VITE_LOG_POST_URL | Frontend | Log server base URL (default localhost:3001). |
+| VITE_GEOSERVER_BASE_URL | Frontend | Optional; full GeoServer base URL. |
+| VITE_GEOSERVER_WORKSPACE | Frontend | GeoServer workspace (default wine0clock). |
+| SUPABASE_URL | Backend log server | Supabase project URL. |
+| SUPABASE_SERVICE_ROLE_KEY | Backend log server | Service role key for DB and Storage. |
+| LOG_POST_PORT | Backend log server | HTTP port (default 3001). |
+| LOG_POST_DEBUG_EXPORT_GEOJSON | Backend log server | If set, write local GeoJSON to backend/post-requests/. |
+| RAPIDAPI_KEY | Supabase Edge Function secrets | Key for RapidAPI wine APIs. |

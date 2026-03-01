@@ -1,7 +1,10 @@
 {
   "name": "wine0clock-wiser",
   "private": true,
-  "workspaces": ["frontend", "backend"],
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
   "scripts": {
     "dev": "concurrently -n frontend,log \"npm run dev -w frontend\" \"npm run log -w backend\"",
     "dev:frontend": "npm run dev -w frontend",
@@ -9,10 +12,13 @@
     "lint": "npm run lint -w frontend",
     "preview": "npm run preview -w frontend",
     "test": "npm run test -w frontend",
-"serve": "npm run serve -w backend",
+    "serve": "npm run serve -w backend",
     "log": "npm run log -w backend"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
+  },
+  "dependencies": {
+    "marked": "^17.0.3"
   }
 }
