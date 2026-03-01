@@ -1,4 +1,4 @@
-# Wine O'Clock Wiser
+# WineO'Clock
 
 Monorepo: **backend** (Supabase Edge Functions) and one or more **frontends**. The backend is frontend-agnostic; the current app can be unplugged and a new one can be plugged in.
 
